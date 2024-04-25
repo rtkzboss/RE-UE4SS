@@ -146,8 +146,19 @@ namespace RC::UEGenerator
 
     auto is_cpp_keyword(std::wstring_view s) -> bool
     {
-        static std::set<std::wstring_view> kws = { STR("alignas"), STR("alignof"), STR("and"), STR("and_eq"), STR("asm"), STR("atomic_cancel"), STR("atomic_commit"), STR("atomic_noexcept"), STR("auto"), STR("bitand"), STR("bitor"), STR("bool"), STR("break"), STR("case"), STR("catch"), STR("char"), STR("char16_t"), STR("char32_t"), STR("char8_t"), STR("class"), STR("co_await"), STR("co_return"), STR("co_yield"), STR("compl"), STR("concept"), STR("const"), STR("const_cast"), STR("consteval"), STR("constexpr"), STR("constinit"), STR("continue"), STR("decltype"), STR("default"), STR("delete"), STR("do"), STR("double"), STR("dynamic_cast"), STR("else"), STR("enum"), STR("explicit"), STR("export"), STR("extern"), STR("false"), STR("float"), STR("for"), STR("friend"), STR("goto"), STR("if"), STR("inline"), STR("int"), STR("long"), STR("mutable"), STR("namespace"), STR("new"), STR("noexcept"), STR("not"), STR("not_eq"), STR("nullptr"), STR("operator"), STR("or"), STR("or_eq"), STR("private"), STR("protected"), STR("public"), STR("reflexpr"), STR("register"), STR("reinterpret_cast"), STR("requires"), STR("return"), STR("short"), STR("signed"), STR("sizeof"), STR("static"), STR("static_assert"), STR("static_cast"), STR("struct"), STR("switch"), STR("synchronized"), STR("template"), STR("this"), STR("thread_local"), STR("throw"), STR("true"), STR("try"), STR("typedef"), STR("typeid"), STR("typename"), STR("union"), STR("unsigned"), STR("using"), STR("virtual"), STR("void"), STR("volatile"), STR("wchar_t"), STR("while"), STR("xor"), STR("xor_eq") };
+        static const std::unordered_set<std::wstring_view> kws = { STR("alignas"), STR("alignof"), STR("and"), STR("and_eq"), STR("asm"), STR("atomic_cancel"), STR("atomic_commit"), STR("atomic_noexcept"), STR("auto"), STR("bitand"), STR("bitor"), STR("bool"), STR("break"), STR("case"), STR("catch"), STR("char"), STR("char16_t"), STR("char32_t"), STR("char8_t"), STR("class"), STR("co_await"), STR("co_return"), STR("co_yield"), STR("compl"), STR("concept"), STR("const"), STR("const_cast"), STR("consteval"), STR("constexpr"), STR("constinit"), STR("continue"), STR("decltype"), STR("default"), STR("delete"), STR("do"), STR("double"), STR("dynamic_cast"), STR("else"), STR("enum"), STR("explicit"), STR("export"), STR("extern"), STR("false"), STR("float"), STR("for"), STR("friend"), STR("goto"), STR("if"), STR("inline"), STR("int"), STR("long"), STR("mutable"), STR("namespace"), STR("new"), STR("noexcept"), STR("not"), STR("not_eq"), STR("nullptr"), STR("operator"), STR("or"), STR("or_eq"), STR("private"), STR("protected"), STR("public"), STR("reflexpr"), STR("register"), STR("reinterpret_cast"), STR("requires"), STR("return"), STR("short"), STR("signed"), STR("sizeof"), STR("static"), STR("static_assert"), STR("static_cast"), STR("struct"), STR("switch"), STR("synchronized"), STR("template"), STR("this"), STR("thread_local"), STR("throw"), STR("true"), STR("try"), STR("typedef"), STR("typeid"), STR("typename"), STR("union"), STR("unsigned"), STR("using"), STR("virtual"), STR("void"), STR("volatile"), STR("wchar_t"), STR("while"), STR("xor"), STR("xor_eq") };
         return kws.contains(s);
+    }
+    auto fix_cpp_keyword_name(std::wstring& s) -> std::wstring&
+    {
+        if (!is_cpp_keyword(s)) return s;
+        s[0] = s[0] - 'a' + 'A';
+        return s;
+    }
+    auto fix_cpp_keyword_name(std::wstring&& s) -> std::wstring
+    {
+        fix_cpp_keyword_name(s);
+        return s;
     }
 
     class FlagFormatHelper
@@ -898,7 +909,7 @@ namespace RC::UEGenerator
             {
                 if ((property->GetPropertyFlags() & CPF_Net) != 0)
                 {
-                    implementation_file.append_line(std::format(STR("DOREPLIFETIME({}, {});"), class_native_name, property->GetName()));
+                    implementation_file.append_line(std::format(STR("DOREPLIFETIME({}, {});"), class_native_name, fix_cpp_keyword_name(property->GetName())));
                 }
             }
 
@@ -977,7 +988,7 @@ namespace RC::UEGenerator
         }
 
         header_data.append_line(std::format(STR("UPROPERTY({})"), property_flags_string));
-        header_data.append_line(std::format(STR("{} {}{};"), property_type_string, property->GetName(), property_extra_declaration));
+        header_data.append_line(std::format(STR("{} {}{};"), property_type_string, fix_cpp_keyword_name(property->GetName()), property_extra_declaration));
         header_data.append_line(STR(""));
     }
 
@@ -1092,7 +1103,7 @@ namespace RC::UEGenerator
                                                                   const std::wstring& property_scope,
                                                                   const std::wstring& operator_type) -> void
     {
-        const std::wstring field_class_name = property->GetName();
+        const std::wstring field_class_name = fix_cpp_keyword_name(property->GetName());
         if (property->GetArrayDim() == 1)
         {
             implementation_file.append_line(std::format(STR("{}{}{}{};"), property_scope, field_class_name, operator_type, value));
@@ -1113,7 +1124,7 @@ namespace RC::UEGenerator
                                                                     const std::wstring& property_type,
                                                                     const std::wstring& operator_type) -> void
     {
-        const std::wstring field_class_name = property->GetName();
+        const std::wstring field_class_name = fix_cpp_keyword_name(property->GetName());
         implementation_file.append_line(std::format(STR("const FProperty* p_{} = GetClass()->FindPropertyByName(\"{}\");"), field_class_name, field_class_name));
         if (property->GetArrayDim() == 1)
         {
@@ -1132,7 +1143,7 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::generate_property_value(
             UStruct* ustruct, FProperty* property, void* object, GeneratedSourceFile& implementation_file, const std::wstring& property_scope) -> void
     {
-        const std::wstring property_name = property->GetName();
+        const std::wstring property_name = fix_cpp_keyword_name(property->GetName());
         if (property_name == STR("NativeClass") || property_name == STR("hudClass")) { return; }
         const bool private_access_modifier = get_property_access_modifier(property) == AccessModifier::Private;
         bool super_and_no_access = false;
@@ -1556,7 +1567,7 @@ namespace RC::UEGenerator
                     implementation_file.add_dependency_object(object_class_type, DependencyLevel::Include);
                     implementation_file.m_implementation_constructor.append(
                             std::format(STR(".SetDefaultSubobjectClass<{}>(TEXT(\"{}\"))"), get_native_class_name(object_class_type), object_name));
-                            m_class_subobjects.try_emplace(object_name, property->GetName());
+                            m_class_subobjects.try_emplace(object_name, fix_cpp_keyword_name(property->GetName()));
                 }
                 else
                 {
@@ -1564,7 +1575,7 @@ namespace RC::UEGenerator
                     implementation_file.add_dependency_object(object_class_type, DependencyLevel::Include);
                     const std::wstring object_class_name = get_native_class_name(object_class_type);
                     initializer = std::format(STR("CreateDefaultSubobject<{}>(TEXT(\"{}\"))"), object_class_name, object_name);
-                    m_class_subobjects.try_emplace(object_name, property->GetName());
+                    m_class_subobjects.try_emplace(object_name, fix_cpp_keyword_name(property->GetName()));
                     if (!super_and_no_access)
                     {
                         generate_simple_assignment_expression(property, initializer, implementation_file, property_scope);
@@ -1723,7 +1734,7 @@ namespace RC::UEGenerator
             {
                 if (!super_and_no_access)
                 {
-                    implementation_file.append_line(std::format(STR("{}{}.AddDefaulted({});"), property_scope, property->GetName(), property_value->Num()));
+                    implementation_file.append_line(std::format(STR("{}{}.AddDefaulted({});"), property_scope, fix_cpp_keyword_name(property->GetName()), property_value->Num()));
                 }
                 else
                 {
@@ -3233,9 +3244,10 @@ namespace RC::UEGenerator
                 param_declaration.append(STR(" "));
 
                 std::wstring property_name = property->GetName();
+                fix_cpp_keyword_name(property_name);
 
                 // If property name is blacklisted, capitalize first letter and prepend New
-                if ((uclass && is_function_parameter_shadowing(uclass, property)) || blacklisted_property_names.contains(property_name) || is_cpp_keyword(property_name))
+                if ((uclass && is_function_parameter_shadowing(uclass, property)) || blacklisted_property_names.contains(property_name))
                 {
                     property_name[0] = towupper(property_name[0]);
                     property_name.insert(0, STR("New"));
