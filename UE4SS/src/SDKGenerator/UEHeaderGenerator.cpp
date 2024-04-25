@@ -546,7 +546,7 @@ namespace RC::UEGenerator
         }
         for (const RC::Unreal::FImplementedInterface& uinterface : implemented_interfaces)
         {
-            for (UFunction* interface_function : uinterface.Class->ForEachFunction())
+            for (UFunction* interface_function : uinterface.Class->ForEachFunctionInChain())
             {
                 bool should_skip = (interface_function->GetFunctionFlags() & FUNC_BlueprintEvent);
 
@@ -554,6 +554,45 @@ namespace RC::UEGenerator
                 {
                     append_access_modifier(header_data, get_function_access_modifier(interface_function), current_access_modifier);
                     generate_function(uclass, interface_function, header_data, false, blacklisted_property_names, true);
+                }
+            }
+            // a bunch of non-reflected functions
+            for (auto klass = uinterface.Class; klass; klass = klass->GetSuperClass())
+            {
+                auto name = klass->GetNamePrivate();
+                static const auto NAME_MovieSceneTrackTemplateProducer = FName(STR("MovieSceneTrackTemplateProducer"), FNAME_Add);
+                if (name == NAME_MovieSceneTrackTemplateProducer)
+                {
+                    static auto MovieSceneEvalTemplatePtr =
+                            UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/MovieScene.MovieSceneEvalTemplatePtr"));
+                    header_data.add_dependency_object(MovieSceneEvalTemplatePtr, DependencyLevel::Include);
+                    header_data.append_line(STR("virtual FMovieSceneEvalTemplatePtr CreateTemplateForSection(const UMovieSceneSection& InSection) const "
+                                                "PURE_VIRTUAL(CreateTemplateForSection,return {};);"));
+                }
+                static const auto NAME_AbilitySystemInterface = FName(STR("AbilitySystemInterface"), FNAME_Add);
+                if (name == NAME_AbilitySystemInterface)
+                {
+                    static auto AbilitySystemComponent =
+                            UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/GameplayAbilities.AbilitySystemComponent"));
+                    header_data.add_dependency_object(AbilitySystemComponent, DependencyLevel::PreDeclaration);
+                    header_data.append_line(STR("virtual UAbilitySystemComponent* GetAbilitySystemComponent() const "
+                                                "PURE_VIRTUAL(GetAbilitySystemComponent,return nullptr;);"));
+                }
+                static const auto NAME_Interface_PostProcessVolume = FName(STR("Interface_PostProcessVolume"), FNAME_Add);
+                if (name == NAME_Interface_PostProcessVolume)
+                {
+                    // FVector is in CoreMinimal.h
+                    header_data.append_line(STR("virtual bool EncompassesPoint(FVector Point, float SphereRadius/*=0.f*/, float* OutDistanceToPoint) "
+                                                "PURE_VIRTUAL(EncompassesPoint,return false;);"));
+                    // FPostProcessVolumeProperties is declared in Interface_PostProcessVolume.h and not reflected
+                    header_data.append_line(STR("virtual FPostProcessVolumeProperties GetProperties() const "
+                                                "PURE_VIRTUAL(GetProperties,return {};);"));
+                }
+                static const auto NAME_BlendableInterface = FName(STR("BlendableInterface"), FNAME_Add);
+                if (name == NAME_BlendableInterface)
+                {
+                    header_data.append_line(STR("virtual void OverrideBlendableSettings(class FSceneView& View, float Weight) const "
+                                                "PURE_VIRTUAL(OverrideBlendableSettings,);"));
                 }
             }
         }
