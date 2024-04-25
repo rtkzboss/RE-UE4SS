@@ -80,6 +80,10 @@ namespace RC::UEGenerator
                 FName(STR("AIDataProviderFloatValue"), FNAME_Add),
                 FName(STR("AIDataProviderIntValue"), FNAME_Add),
                 FName(STR("AIDataProviderBoolValue"), FNAME_Add),
+                FName(STR("EnvTraceData"), FNAME_Add),
+                FName(STR("Timeline"), FNAME_Add),
+                FName(STR("AIMoveRequest"), FNAME_Add),
+                FName(STR("NavAgentSelector"), FNAME_Add),
         };
 
         auto subtype_name = subtype->GetNamePrivate();
