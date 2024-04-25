@@ -140,6 +140,12 @@ namespace RC::UEGenerator
         return s;
     }
 
+    auto is_cpp_keyword(std::wstring_view s) -> bool
+    {
+        static std::set<std::wstring_view> kws = { STR("alignas"), STR("alignof"), STR("and"), STR("and_eq"), STR("asm"), STR("atomic_cancel"), STR("atomic_commit"), STR("atomic_noexcept"), STR("auto"), STR("bitand"), STR("bitor"), STR("bool"), STR("break"), STR("case"), STR("catch"), STR("char"), STR("char16_t"), STR("char32_t"), STR("char8_t"), STR("class"), STR("co_await"), STR("co_return"), STR("co_yield"), STR("compl"), STR("concept"), STR("const"), STR("const_cast"), STR("consteval"), STR("constexpr"), STR("constinit"), STR("continue"), STR("decltype"), STR("default"), STR("delete"), STR("do"), STR("double"), STR("dynamic_cast"), STR("else"), STR("enum"), STR("explicit"), STR("export"), STR("extern"), STR("false"), STR("float"), STR("for"), STR("friend"), STR("goto"), STR("if"), STR("inline"), STR("int"), STR("long"), STR("mutable"), STR("namespace"), STR("new"), STR("noexcept"), STR("not"), STR("not_eq"), STR("nullptr"), STR("operator"), STR("or"), STR("or_eq"), STR("private"), STR("protected"), STR("public"), STR("reflexpr"), STR("register"), STR("reinterpret_cast"), STR("requires"), STR("return"), STR("short"), STR("signed"), STR("sizeof"), STR("static"), STR("static_assert"), STR("static_cast"), STR("struct"), STR("switch"), STR("synchronized"), STR("template"), STR("this"), STR("thread_local"), STR("throw"), STR("true"), STR("try"), STR("typedef"), STR("typeid"), STR("typename"), STR("union"), STR("unsigned"), STR("using"), STR("virtual"), STR("void"), STR("volatile"), STR("wchar_t"), STR("while"), STR("xor"), STR("xor_eq") };
+        return kws.contains(s);
+    }
+
     class FlagFormatHelper
     {
         std::set<std::wstring> m_switches;
@@ -3225,7 +3231,7 @@ namespace RC::UEGenerator
                 std::wstring property_name = property->GetName();
 
                 // If property name is blacklisted, capitalize first letter and prepend New
-                if ((uclass && is_function_parameter_shadowing(uclass, property)) || blacklisted_property_names.contains(property_name))
+                if ((uclass && is_function_parameter_shadowing(uclass, property)) || blacklisted_property_names.contains(property_name) || is_cpp_keyword(property_name))
                 {
                     property_name[0] = towupper(property_name[0]);
                     property_name.insert(0, STR("New"));
