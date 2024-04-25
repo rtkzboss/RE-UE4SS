@@ -209,7 +209,7 @@ namespace RC::UEGenerator
 
                     for (const std::wstring& parameter_value : parameter_values)
                     {
-                        resulting_string.append(parameter_value);
+                        write_escaped(resulting_string, parameter_value);
                         resulting_string.append(STR(", "));
                     }
 
@@ -221,7 +221,7 @@ namespace RC::UEGenerator
                 }
                 else
                 {
-                    resulting_string.append(*parameter_values.begin());
+                    write_escaped(resulting_string, *parameter_values.begin());
                 }
                 resulting_string.append(STR(", "));
             }
@@ -243,6 +243,25 @@ namespace RC::UEGenerator
                 resulting_string.erase(resulting_string.size() - 2, 2);
             }
             return resulting_string;
+        }
+        auto write_escaped(std::wstring& dst, std::wstring_view src) const -> void
+        {
+            // FBaseParser::ReadNewStyleValue uses FBaseParser::GetToken
+            // escape everything that isn't purely alphabetic, which is slightly conservative but not wrong
+            if (std::all_of(src.begin(), src.end(), [](auto c) { return 'a' <= c&& c <= 'z' || 'A' <= c&& c <= 'Z' || '_' == c; }))
+            {
+                dst.append(src);
+            }
+            else
+            {
+                dst += '"';
+                for (auto c : src)
+                {
+                    if (c == '"') dst += '\\';
+                    dst += c;
+                }
+                dst += '"';
+            }
         }
     };
 
@@ -3125,7 +3144,7 @@ namespace RC::UEGenerator
             auto param_uc_name = string_to_uppercase(param_name);
             if (param_uc_name.find(STR("WORLDCONTEXT")) != param_uc_name.npos)
             {
-                flag_format_helper.get_meta()->add_parameter(STR("WorldContext"), std::format(STR("\"{}\""), param_name));
+                flag_format_helper.get_meta()->add_parameter(STR("WorldContext"), param_name);
                 bWCFound = true;
             }
             if (auto as_struct_property = CastField<FStructProperty>(param); as_struct_property)
@@ -3133,7 +3152,7 @@ namespace RC::UEGenerator
                 // We now know this is a StructProperty.
                 if (as_struct_property->GetStruct()->IsChildOf(latent_action_info))
                 {
-                    flag_format_helper.get_meta()->add_parameter(STR("LatentInfo"), std::format(STR("\"{}\""), param_name));
+                    flag_format_helper.get_meta()->add_parameter(STR("LatentInfo"), param_name);
                     flag_format_helper.get_meta()->add_switch(STR("Latent"));
                     bLAFound = true;
                 }
