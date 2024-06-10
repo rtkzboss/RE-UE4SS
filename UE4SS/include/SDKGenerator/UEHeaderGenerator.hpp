@@ -130,6 +130,16 @@ namespace RC::UEGenerator
         virtual auto generate_file_contents() -> std::wstring;
     };
 
+    class PropertyScope
+    {
+        std::vector<std::tuple<FProperty*, int32_t>> m_elements;
+
+      public:
+        auto pop() -> void;
+        auto push(FProperty* prop, int32_t index) -> void;
+        auto access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> std::wstring;
+    };
+
     class GeneratedSourceFile : public GeneratedFile
     {
       private:
@@ -145,7 +155,7 @@ namespace RC::UEGenerator
       public:
         std::wstring m_implementation_constructor;
         std::unordered_set<FName> parent_property_names{};
-        std::map<FProperty*, std::tuple<StringType /*property type*/, StringType /*attach string*/, bool /*access type*/>> attachments{};
+        std::map<FProperty*, std::pair<PropertyScope, StringType>> attachments{};
 
         GeneratedSourceFile(const FFilePath& file_path, std::wstring_view file_module_name, bool is_implementation_file, UObject* object);
 
@@ -250,6 +260,8 @@ namespace RC::UEGenerator
         auto generate_module_build_file(std::wstring const& module_name) -> void;
         auto generate_module_implementation_file(std::wstring_view module_name) -> void;
 
+        static auto needs_advanced_access(UStruct* this_struct, FProperty* prop) -> bool;
+
       private:
         auto generate_interface_definition(UClass* function, GeneratedSourceFile& header_data) -> void;
         auto generate_object_definition(UClass* interface_function, GeneratedSourceFile& header_data) -> void;
@@ -274,7 +286,7 @@ namespace RC::UEGenerator
                                           void const* object,
                                           void const* archetype,
                                           GeneratedSourceFile& implementation_file,
-                                          std::wstring_view property_scope,
+                                          PropertyScope& property_scope,
                                           bool write_defaults) -> void;
         auto generate_function_implementation(UClass* uclass,
                                               UFunction* function,
@@ -300,23 +312,16 @@ namespace RC::UEGenerator
         auto generate_default_property_value(FProperty* property, GeneratedSourceFile& header_data, std::wstring_view ContextName) -> std::wstring;
 
         auto gen_id() -> uint32_t;
-        auto needs_advanced_access(UStruct* this_struct, FProperty* prop) -> bool;
         auto is_default_value(FProperty* prop, void const* object, void const* archetype, int32_t index) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value) -> std::wstring;
-        auto generate_simple_assignment_expression(FProperty* property,
-                                                   int32_t index,
-                                                   std::wstring_view value,
-                                                   GeneratedSourceFile& implementation_file,
-                                                   std::wstring_view property_scope,
-                                                   std::wstring_view operator_type = STR(" = ")) -> void;
-        auto generate_advanced_assignment_expression(FProperty* property,
-                                                     int32_t index,
-                                                     std::wstring_view value,
-                                                     GeneratedSourceFile& implementation_file,
-                                                     std::wstring_view property_scope,
-                                                     std::wstring_view property_type,
-                                                     std::wstring_view operator_type = STR(" = ")) -> void;
+        auto generate_assignment_expression(UStruct* this_struct,
+                                            FProperty* property,
+                                            int32_t index,
+                                            std::wstring_view value,
+                                            GeneratedSourceFile& implementation_file,
+                                            PropertyScope& property_scope,
+                                            std::wstring_view operator_type = STR(" = ")) -> void;
 
         auto static generate_parameter_count_string(int32_t parameter_count) -> std::wstring;
         auto static determine_primary_game_module_name() -> std::wstring;

@@ -288,6 +288,64 @@ namespace RC::UEGenerator
         }
     };
 
+    auto PropertyScope::pop() -> void
+    {
+        m_elements.pop_back();
+    }
+    auto PropertyScope::push(FProperty* prop, int32_t index) -> void
+    {
+        m_elements.emplace_back(prop, prop->GetArrayDim() == 1 ? -1 : index);
+    }
+    auto PropertyScope::access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> std::wstring
+    {
+        std::wstring out = STR("(*this)");
+        for (auto [prop, index] : m_elements)
+        {
+            if (UEHeaderGenerator::needs_advanced_access(this_struct, prop))
+            {
+                int32_t i = index == -1 ? 0 : index;
+                auto owner = Cast<UStruct>(prop->GetOutermostOwner());
+                implementation_file.add_dependency_object(owner, DependencyLevel::Include);
+                if (auto owner_class = Cast<UClass>(owner))
+                {
+                    out = std::format(STR("(*{}::StaticClass()->FindPropertyByName(\"{}\")->ContainerPtrToValuePtr<{}>(&{}, {}))"),
+                                      get_native_class_name(owner_class),
+                                      prop->GetName(),
+                                      generate_property_cxx_name(prop, true, this_struct),
+                                      out,
+                                      i);
+                }
+                else if (auto owner_struct = Cast<UScriptStruct>(owner))
+                {
+                    out = std::format(STR("(*TBaseStructure<{}>::Get()->FindPropertyByName(\"{}\")->ContainerPtrToValuePtr<{}>(&{}, {}))"),
+                                      get_native_struct_name(owner_struct),
+                                      prop->GetName(),
+                                      generate_property_cxx_name(prop, true, this_struct),
+                                      out,
+                                      i);
+                }
+                else
+                {
+                    Output::send<LogLevel::Error>(STR("Unimplemented advanced access for {}"), owner->GetFullName());
+                }
+            }
+            else
+            {
+                out.push_back('.');
+                out.append(fix_cpp_keyword_name(prop->GetName()));
+                if (prop->GetPropertyFlags() & CPF_Deprecated)
+                {
+                    out.append(STR("_DEPRECATED"));
+                }
+                if (index != -1)
+                {
+                    std::format_to(std::back_inserter(out), "[{}]", index);
+                }
+            }
+        }
+        return out;
+    }
+
     auto UEHeaderGenerator::generate_module_build_file(std::wstring const& module_name) -> void
     {
         const FFilePath module_file_path = m_root_directory / module_name / std::format(STR("{}.Build.cs"), module_name);
@@ -882,11 +940,12 @@ namespace RC::UEGenerator
 
         // Generate and initialize properties
         UObject* cdo = uclass->GetClassDefaultObject();
+        PropertyScope scope{};
         if (cdo)
         {
             for (FProperty* property : uclass->ForEachProperty())
             {
-                generate_property_assignment(uclass, uclass, property, cdo, nullptr, implementation_file, STR("this->"), false);
+                generate_property_assignment(uclass, uclass, property, cdo, nullptr, implementation_file, scope, false);
             }
 
             UObject* super_cdo = super_class ? super_class->GetClassDefaultObject() : nullptr;
@@ -894,7 +953,7 @@ namespace RC::UEGenerator
             {
                 for (FProperty* property : super_class->ForEachProperty())
                 {
-                    generate_property_assignment(uclass, uclass, property, cdo, super_cdo, implementation_file, STR("this->"), false);
+                    generate_property_assignment(uclass, uclass, property, cdo, super_cdo, implementation_file, scope, false);
                 }
             }
         }
@@ -906,16 +965,9 @@ namespace RC::UEGenerator
         m_class_subobjects.clear();
 
         // Generate component attachments
-        for (auto attachment : implementation_file.attachments)
+        for (auto &attachment : implementation_file.attachments)
         {
-            if (get<2>(attachment.second) == false)
-            {
-                generate_simple_assignment_expression(attachment.first, 0, get<1>(attachment.second), implementation_file, STR("this->"), STR("->"));
-            }
-            else
-            {
-                generate_advanced_assignment_expression(attachment.first, 0, get<1>(attachment.second), implementation_file, STR("this->"), get<0>(attachment.second), STR("->"));
-            }
+            implementation_file.append_line(std::format(STR("{}->{};"), attachment.second.first.access(uclass, implementation_file), attachment.second.second));
         }
 
         implementation_file.end_indent_level();
@@ -979,10 +1031,11 @@ namespace RC::UEGenerator
         implementation_file.begin_indent_level();
 
         // Generate properties
+        PropertyScope scope{};
         void const* struct_defaults = get_default_object(this_struct);
         for (FProperty* property : this_struct->ForEachProperty())
         {
-            generate_property_assignment(this_struct, this_struct, property, struct_defaults, nullptr, implementation_file, STR("this->"), true);
+            generate_property_assignment(this_struct, this_struct, property, struct_defaults, nullptr, implementation_file, scope, true);
         }
         UStruct* super = this_struct->GetSuperStruct();
         void const* super_defaults = super ? get_default_object(super) : nullptr;
@@ -990,7 +1043,7 @@ namespace RC::UEGenerator
         {
             for (FProperty* property : super->ForEachProperty())
             {
-                generate_property_assignment(this_struct, this_struct, property, struct_defaults, super_defaults, implementation_file, STR("this->"), false);
+                generate_property_assignment(this_struct, this_struct, property, struct_defaults, super_defaults, implementation_file, scope, false);
             }
         }
 
@@ -1140,7 +1193,9 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::needs_advanced_access(UStruct* this_struct, FProperty* prop) -> bool
     {
         bool is_private = prop->GetPropertyFlags() & CPF_NativeAccessSpecifierPrivate;
-        return is_private && prop->GetOutermostOwner() != this_struct;
+        bool is_protected = prop->GetPropertyFlags() & CPF_NativeAccessSpecifierProtected;
+        UStruct* outer = Cast<UStruct>(prop->GetOutermostOwner());
+        return is_private && outer != this_struct || is_protected && !this_struct->IsChildOf(outer);
     }
     auto UEHeaderGenerator::is_default_value(FProperty* property, void const* object, void const* archetype, int32 index)
         -> bool
@@ -1164,6 +1219,16 @@ namespace RC::UEGenerator
         {
             uint64_t default_value = 0;
             return property->Identical(value, &default_value);
+        }
+        if (property->IsA<FArrayProperty>())
+        {
+            auto& value = *property->ContainerPtrToValuePtr<FScriptArray>(object, index);
+            return value.Num() == 0;
+        }
+        if (property->IsA<FSoftObjectProperty>())
+        {
+            auto &value = *property->ContainerPtrToValuePtr<FSoftObjectPath>(object, index);
+            return value.AssetPathName == NAME_None;
         }
         char default_value[16] = {};
         if (sizeof(default_value) < property->GetElementSize() || !(property->GetPropertyFlags() & CPF_ZeroConstructor))
@@ -1228,35 +1293,17 @@ namespace RC::UEGenerator
         }
     }
 
-    auto UEHeaderGenerator::generate_simple_assignment_expression(FProperty* property,
-                                                                  int32 index,
-                                                                  std::wstring_view value,
-                                                                  GeneratedSourceFile& implementation_file,
-                                                                  std::wstring_view property_scope,
-                                                                  std::wstring_view operator_type) -> void
+    auto UEHeaderGenerator::generate_assignment_expression(UStruct* this_struct,
+                                                           FProperty* property,
+                                                           int32 index,
+                                                           std::wstring_view value,
+                                                           GeneratedSourceFile& implementation_file,
+                                                           PropertyScope& property_scope,
+                                                           std::wstring_view operator_type) -> void
     {
-        auto field_class_name = fix_cpp_keyword_name(property->GetName());
-        if (property->GetArrayDim() == 1)
-        {
-            implementation_file.append_line(std::format(STR("{}{}{}{};"), property_scope, field_class_name, operator_type, value));
-        }
-        else
-        {
-            implementation_file.append_line(std::format(STR("{}{}[{}]{}{};"), property_scope, field_class_name, index, operator_type, value));
-        }
-    }
-
-    auto UEHeaderGenerator::generate_advanced_assignment_expression(FProperty* property,
-                                                                    int32 index,
-                                                                    std::wstring_view value,
-                                                                    GeneratedSourceFile& implementation_file,
-                                                                    std::wstring_view property_scope,
-                                                                    std::wstring_view property_type,
-                                                                    std::wstring_view operator_type) -> void
-    {
-        auto id = gen_id();
-        implementation_file.append_line(std::format(STR("const FProperty* gen{} = GetClass()->FindPropertyByName(\"{}\");"), id, property->GetName()));
-        implementation_file.append_line(std::format(STR("gen{}->ContainerPtrToValuePtr<{}>(this){}[{}]{}{};"), id, property_type, property_scope, index, operator_type, value));
+        property_scope.push(property, index);
+        implementation_file.append_line(std::format(STR("{}{}{};"), property_scope.access(this_struct, implementation_file), operator_type, value));
+        property_scope.pop();
     }
 
     auto UEHeaderGenerator::generate_property_assignment(UStruct* this_struct,
@@ -1265,18 +1312,15 @@ namespace RC::UEGenerator
                                                          void const* object,
                                                          void const* archetype,
                                                          GeneratedSourceFile& implementation_file,
-                                                         std::wstring_view property_scope,
+                                                         PropertyScope& property_scope,
                                                          bool write_defaults) -> void
     {
-        static FName NAME_NativeClass = FName(STR("NativeClass"), FNAME_Add);
-        static FName NAME_hudClass = FName(STR("hudClass"), FNAME_Add);
+        static FName NAME_NativeClass{STR("NativeClass"), FNAME_Add};
+        static FName NAME_hudClass{STR("hudClass"), FNAME_Add};
         FName property_name = property->GetFName();
         if (property_name == NAME_NativeClass || property_name == NAME_hudClass) return;
 
         //Output::send<LogLevel::Verbose>(STR("assign {}\n"), property->GetFullName());
-
-        bool needs_advanced = needs_advanced_access(this_struct, property);
-        const std::wstring property_type = generate_property_cxx_name(property, true, ustruct);
 
         if (property->IsA<FByteProperty>())
         {
@@ -1288,14 +1332,7 @@ namespace RC::UEGenerator
 
                 uint8_t value = prop->GetPropertyValueInContainer(object);
                 auto value_str = uenum ? generate_enum_value(uenum, value) : std::to_wstring(value);
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
@@ -1318,14 +1355,7 @@ namespace RC::UEGenerator
                 // TODO: GetSignedIntPropertyValue should not need mutable pointer
                 int64 value = underlying->GetSignedIntPropertyValue(const_cast<void*>(prop->ContainerPtrToValuePtr<void>(object, index)));
                 auto value_str = generate_enum_value(uenum, value);
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
@@ -1338,19 +1368,12 @@ namespace RC::UEGenerator
 
                 bool value = prop->GetPropertyValueInContainer(object, index);
                 auto value_str = value ? STR("true") : STR("false");
-                if (!needs_advanced)
+                if (prop->GetFieldMask() != 0xff && needs_advanced_access(this_struct, prop))
                 {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
+                    Output::send<LogLevel::Warning>(STR("Assigning private bitmask bool is unimplemented in {}\n"), prop->GetFullName());
+                    continue;
                 }
-                else
-                {
-                    if (prop->GetFieldMask() != 0xff)
-                    {
-                        Output::send<LogLevel::Warning>(STR("Assigning private bitmask bool is unimplemented\n"));
-                        continue;
-                    }
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
@@ -1363,14 +1386,7 @@ namespace RC::UEGenerator
 
                 FName value = prop->GetPropertyValueInContainer(object, index);
                 auto value_str = value.Equals(NAME_None) ? STR("NAME_None") : std::format(STR("TEXT(\"{}\")"), value.ToString());
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
@@ -1382,15 +1398,8 @@ namespace RC::UEGenerator
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
 
                 FString const& value = prop->GetPropertyValueInContainer(object, index);
-                const std::wstring value_str = create_string_literal(value.GetCharArray());
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                auto value_str = create_string_literal(value.GetCharArray());
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
@@ -1403,15 +1412,8 @@ namespace RC::UEGenerator
 
                 FText const& value = prop->GetPropertyValueInContainer(object, index);
                 Output::send<LogLevel::Warning>(STR("FTextProperty values are incorrectly implemented in {}\n"), property->GetFullName());
-                const std::wstring value_str = std::format(STR("FText::FromString({})"), create_string_literal(value.ToString()));
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                auto value_str = std::format(STR("FText::FromString({})"), create_string_literal(value.ToString()));
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
@@ -1426,14 +1428,7 @@ namespace RC::UEGenerator
                 if (!value)
                 {
                     // If class value is NULL, generate a simple NULL assignment
-                    if (!needs_advanced)
-                    {
-                        generate_simple_assignment_expression(property, index, STR("nullptr"), implementation_file, property_scope);
-                    }
-                    else
-                    {
-                        generate_advanced_assignment_expression(property, index, STR("nullptr"), implementation_file, property_scope, property_type);
-                    }
+                    generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
                     continue;
                 }
                 if (value->GetClassFlags() & CLASS_Native)
@@ -1441,30 +1436,15 @@ namespace RC::UEGenerator
                     // Otherwise, generate StaticClass call, assuming the class is native
                     implementation_file.add_dependency_object(value, DependencyLevel::Include);
                     auto value_str = std::format(STR("{}::StaticClass()"), get_native_class_name(value));
-                    if (!needs_advanced)
-                    {
-                        generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                    }
-                    else
-                    {
-                        generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                    }
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     continue;
                 }
                 // auto package = value->GetOuterPrivate();
                 // if (value->HasAllFlags(static_cast<EObjectFlags>(RF_Public | RF_Standalone)) && !package->GetOuterPrivate())
                 auto finder_id = gen_id();
-                implementation_file.append_line(
-                        std::format(STR("static ConstructorHelpers::FObjectFinder<UClass> gen{}(TEXT(\"{}\"));"), finder_id, value->GetPathName()));
+                implementation_file.append_line(std::format(STR("static ConstructorHelpers::FObjectFinder<UClass> gen{}(TEXT(\"{}\"));"), finder_id, value->GetPathName()));
                 auto value_str = std::format(STR("gen{}.Object"), finder_id);
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                 // Output::send<LogLevel::Warning>(STR("Unhandled default value of the FClassProperty {} = {}\n"), property->GetFullName(), value->GetFullName());
             }
             return;
@@ -1484,14 +1464,7 @@ namespace RC::UEGenerator
                 {
                     // If object value is NULL, generate a simple NULL constant
                     // TODO: Needs additional checks to see if the class is abstract to potentially change this to a default object init
-                    if (!needs_advanced)
-                    {
-                        generate_simple_assignment_expression(property, index, STR("NULL"), implementation_file, property_scope);
-                    }
-                    else
-                    {
-                        generate_advanced_assignment_expression(property, index, STR("NULL"), implementation_file, property_scope, property_type);
-                    }
+                    generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
                     continue;
                 }
                 UClass* value_class = value->GetClassPrivate();
@@ -1549,14 +1522,7 @@ namespace RC::UEGenerator
                             fetch = std::format(STR("*p_{}_Prior->ContainerPtrToValuePtr<{}*>(this)"), fetch, prior_class);
                         }
                         auto value_str = std::format(STR("({}*){}"), get_native_class_name(prop->GetPropertyClass()), fetch);
-                        if (!needs_advanced)
-                        {
-                            generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                        }
-                        else
-                        {
-                            generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                        }
+                        generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     }
                     else if ((super_value_class && value_class != super_value_class) || parent_component_found)
                     {
@@ -1572,31 +1538,22 @@ namespace RC::UEGenerator
                         implementation_file.add_dependency_object(value_class, DependencyLevel::Include);
                         auto value_str = std::format(STR("CreateDefaultSubobject<{}>(TEXT(\"{}\"))"), get_native_class_name(value_class), value_name.ToString());
                         m_class_subobjects.try_emplace(value_name, prop);
-                        if (!needs_advanced)
-                        {
-                            generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                        }
-                        else
-                        {
-                            generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                        }
+                        generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     }
 
                     FObjectProperty* attach_parent_prop = static_cast<FObjectProperty*>(value->GetPropertyByNameInChain(STR("AttachParent")));
-                    UObject* attach_parent{};
-                    if (attach_parent_prop)
-                    {
-                        attach_parent = attach_parent_prop->GetPropertyValueInContainer(value);
-                    }
-                    if (attach_parent != NULL)
+                    UObject* attach_parent = attach_parent_prop ? attach_parent_prop->GetPropertyValueInContainer(value) : nullptr;
+                    if (attach_parent)
                     {
                         FName attach_parent_name = attach_parent->GetNamePrivate();
                         std::wstring attach_string;
                         auto it = m_class_subobjects.find(attach_parent_name);
                         if (it != m_class_subobjects.end())
                         {
+                            property_scope.push(it->second, 0);
                             // Set property to equal previous property referencing the same object
-                            attach_string = std::format(STR("SetupAttachment({})"), it->second->GetName());
+                            attach_string = std::format(STR("SetupAttachment({})"), property_scope.access(this_struct, implementation_file));
+                            property_scope.pop();
                         }
                         else
                         {
@@ -1606,26 +1563,14 @@ namespace RC::UEGenerator
                                 {
                                     if (!other_property->IsA<FObjectProperty>()) continue;
                                     FObjectProperty* other_prop = static_cast<FObjectProperty*>(other_property);
-                                    UObject* other_value = other_prop->GetPropertyValueInContainer(object, index);
+                                    UObject* other_value = other_prop->GetPropertyValueInContainer(object);
                                     if (!other_value) continue;
                                     FName other_value_name = other_value->GetNamePrivate();
                                     if (other_value_name == attach_parent_name)
                                     {
-                                        auto fetch = other_prop->GetName();
-                                        if (needs_advanced_access(this_struct, other_prop))
-                                        {
-                                            auto other_value_class = other_value->GetClassPrivate();
-                                            if (implementation_file.parent_property_names.emplace(other_prop->GetFName()).second)
-                                            {
-                                                implementation_file.append_line(
-                                                        std::format(STR("const FProperty* p_{}_Parent = GetClass()->FindPropertyByName(\"{}\");"), fetch, fetch));
-                                            }
-                                            implementation_file.add_dependency_object(other_value_class, DependencyLevel::Include);
-                                            fetch = std::format(STR("SetupAttachment(*p_{}_Parent->ContainerPtrToValuePtr<{}*>(this))"),
-                                                                fetch,
-                                                                get_native_class_name(other_value_class));
-                                        }
-                                        attach_string = std::format(STR("SetupAttachment({})"), fetch);
+                                        property_scope.push(other_prop, 0);
+                                        attach_string = std::format(STR("SetupAttachment({})"), property_scope.access(this_struct, implementation_file));
+                                        property_scope.pop();
                                         break;
                                     }
                                 }
@@ -1633,7 +1578,9 @@ namespace RC::UEGenerator
                         }
                         if (!attach_string.empty())
                         {
-                            implementation_file.attachments.try_emplace(property, std::tuple{property_type, attach_string, needs_advanced});
+                            property_scope.push(property, index);
+                            implementation_file.attachments.try_emplace(property, std::pair{property_scope, attach_string});
+                            property_scope.pop();
                         }
                     }
                     continue;
@@ -1644,31 +1591,15 @@ namespace RC::UEGenerator
                     implementation_file.add_dependency_object(val, DependencyLevel::Include);
 
                     auto value_str = std::format(STR("{}::StaticClass()"), get_native_class_name(val));
-                    if (!needs_advanced)
-                    {
-                        generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                    }
-                    else
-                    {
-                        generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                    }
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     return;
                 }
 
                 auto finder_id = gen_id();
-                implementation_file.append_line(std::format(STR("static ConstructorHelpers::FObjectFinder<{}> gen{}(TEXT(\"{}\"));"),
-                                                            get_native_class_name(value_class),
-                                                            finder_id,
-                                                            value->GetPathName()));
+                implementation_file.add_dependency_object(value->GetClassPrivate(), DependencyLevel::Include);
+                implementation_file.append_line(std::format(STR("static ConstructorHelpers::FObjectFinder<{}> gen{}(TEXT(\"{}\"));"), get_native_class_name(value_class), finder_id, value->GetPathName()));
                 auto value_str = std::format(STR("gen{}.Object"), finder_id);
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                 // Output::send<LogLevel::Warning>(STR("Unhandled default value of the FObjectProperty {} = {}\n"), property->GetFullName(), value->GetFullName());
             }
             return;
@@ -1677,7 +1608,7 @@ namespace RC::UEGenerator
         {
             FStructProperty* struct_property = static_cast<FStructProperty*>(property);
             UScriptStruct* script_struct = struct_property->GetStruct();
-            if (script_struct == NULL)
+            if (!script_struct)
             {
                 Output::send<LogLevel::Error>(STR("Struct is NULL for StructProperty in {}\n"), property->GetFullName());
                 return;
@@ -1688,16 +1619,41 @@ namespace RC::UEGenerator
 
                 void const* value = struct_property->ContainerPtrToValuePtr<void>(object, index);
                 void const* arch_value = archetype ? struct_property->ContainerPtrToValuePtr<void>(archetype, index) : nullptr;
-                auto new_property_scope = property->GetArrayDim() > 1 ? std::format(STR("{}{}[{}]."), property_scope, property->GetName(), index)
-                                                                      : std::format(STR("{}{}."), property_scope, property->GetName());
 
-                for (; script_struct; script_struct = script_struct->GetSuperScriptStruct())
+                static FName NAME_Transform{STR("Transform"), FNAME_Add};
+                if (NAME_Transform == script_struct->GetNamePrivate())
                 {
-                    for (FProperty* child_prop : script_struct->ForEachProperty())
+                    auto& value = *property->ContainerPtrToValuePtr<FTransform>(const_cast<void*>(object), index);
+                    auto& rot = value.GetRotation();
+                    auto& trans = value.GetTranslation();
+                    auto& scale = value.GetScale3D();
+                    auto value_str = std::format(STR("FTransform(FQuat({:.9e},{:.9e},{:.9e},{:.9e}), FVector({:.9e},{:.9e},{:.9e}), FVector({:.9e},{:.9e},{:.9e}))"),
+                        rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW(),
+                        trans.GetX(), trans.GetY(), trans.GetZ(),
+                        scale.GetX(), scale.GetY(), scale.GetZ());
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
+                    continue;
+                }
+                static FName NAME_SoftObjectPath{STR("SoftObjectPath"), FNAME_Add};
+                if (NAME_SoftObjectPath == script_struct->GetNamePrivate())
+                {
+                    auto& value = *property->ContainerPtrToValuePtr<FSoftObjectPath>(const_cast<void*>(object), index);
+                    auto value_str = value.AssetPathName == NAME_None
+                                             ? STR("FSoftObjectPath()")
+                                             : std::format(STR("FSoftObjectPath(TEXT(\"{}\"), TEXT(\"\"))"), value.AssetPathName.ToString(), value.SubPathString.GetCharArray());
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
+                    continue;
+                }
+
+                property_scope.push(property, index);
+                for (auto st = script_struct; st; st = st->GetSuperScriptStruct())
+                {
+                    for (FProperty* child_prop : st->ForEachProperty())
                     {
-                        generate_property_assignment(this_struct, script_struct, child_prop, value, arch_value, implementation_file, new_property_scope, write_defaults);
+                        generate_property_assignment(this_struct, script_struct, child_prop, value, arch_value, implementation_file, property_scope, write_defaults);
                     }
                 }
+                property_scope.pop();
             }
             return;
         }
@@ -1708,19 +1664,15 @@ namespace RC::UEGenerator
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
                 FScriptArray const* value = property->ContainerPtrToValuePtr<FScriptArray>(object);
 
-                auto fetch = fix_cpp_keyword_name(property->GetName());
-                if (!needs_advanced)
+                auto id = gen_id();
+                property_scope.push(property, index);
+                implementation_file.append_line(std::format(STR("auto& gen{} = {};"), id, property_scope.access(this_struct, implementation_file)));
+                property_scope.pop();
+                implementation_file.append_line(std::format(STR("gen{}.Empty();"), id));
+                if (value->Num())
                 {
-                    implementation_file.append_line(std::format(STR("{}{}.Empty();"), property_scope, fetch));
-                    if (value->Num())
-                    {
-                        implementation_file.append_line(std::format(STR("{}{}.AddDefaulted({});"), property_scope, fetch, value->Num()));
-                    }
+                    implementation_file.append_line(std::format(STR("gen{}.AddDefaulted({});"), id, value->Num()));
                     Output::send<LogLevel::Warning>(STR("FArrayProperty default value is incorrectly implemented in {}\n"), property->GetFullName());
-                }
-                else
-                {
-                    Output::send<LogLevel::Warning>(STR("Advanced access for FArrayProperty default value is unimplemented in {}\n"), property->GetFullName());
                 }
             }
             return;
@@ -1755,21 +1707,14 @@ namespace RC::UEGenerator
                     double value = numeric_property->GetFloatingPointPropertyValue(numeric_property->ContainerPtrToValuePtr<void>(object));
                     if (numeric_property->IsA<FDoubleProperty>())
                     {
-                        value_str = std::format(STR("{:.17g}"), value);
+                        value_str = std::format(STR("{:.17e}"), value);
                     }
                     else
                     {
-                        value_str = std::format(STR("{:.9g}f"), value);
+                        value_str = std::format(STR("{:.9e}f"), value);
                     }
                 }
-                if (!needs_advanced)
-                {
-                    generate_simple_assignment_expression(property, index, value_str, implementation_file, property_scope);
-                }
-                else
-                {
-                    generate_advanced_assignment_expression(property, index, value_str, implementation_file, property_scope, property_type);
-                }
+                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
             }
             return;
         }
