@@ -288,6 +288,23 @@ namespace RC::UEGenerator
         }
     };
 
+    auto write_property_name(std::wstring& out, FProperty* prop) -> void
+    {
+        static FName NAME_Position{STR("Position"), FNAME_Add};
+        FName name = prop->GetFName();
+        if (name == NAME_Position)
+        {
+            out.append(STR("Position"));
+        }
+        else
+        {
+            out.append(fix_cpp_keyword_name(name.ToString()));
+        }
+        if (prop->GetPropertyFlags() & CPF_Deprecated)
+        {
+            out.append(STR("_DEPRECATED"));
+        }
+    }
     auto PropertyScope::pop() -> void
     {
         m_elements.pop_back();
@@ -332,11 +349,7 @@ namespace RC::UEGenerator
             else
             {
                 out.push_back('.');
-                out.append(fix_cpp_keyword_name(prop->GetName()));
-                if (prop->GetPropertyFlags() & CPF_Deprecated)
-                {
-                    out.append(STR("_DEPRECATED"));
-                }
+                write_property_name(out, prop);
                 if (index != -1)
                 {
                     std::format_to(std::back_inserter(out), "[{}]", index);
@@ -1053,48 +1066,38 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::generate_property(UObject* uclass, FProperty* property, GeneratedSourceFile& header_data) -> void
     {
-        const std::wstring property_flags_string = generate_property_flags(property);
+        auto property_flags = generate_property_flags(property);
 
         bool is_bitmask_bool = false;
         PropertyTypeDeclarationContext Context(uclass->GetName(), &header_data, true, &is_bitmask_bool);
 
-        std::wstring property_type_string{};
-        bool type_is_valid = true;
+        std::wstring property_decl{};
         std::wstring error_string{};
         try
         {
-            property_type_string = generate_property_type_declaration(property, Context);
+            property_decl = generate_property_type_declaration(property, Context);
         }
         catch (std::exception& e)
         {
-            type_is_valid = false;
             error_string = to_wstring(e.what());
-        }
-
-        if (!type_is_valid)
-        {
             Output::send<LogLevel::Warning>(STR("Warning: {}\n"), error_string);
-            header_data.append_line(std::format(STR("// UPROPERTY({})"), property_flags_string));
-            header_data.append_line(std::format(STR("// Missed Property: {}"), property->GetName()));
-            header_data.append_line(std::format(STR("// {}"), error_string));
-            header_data.append_line(STR(""));
             return;
         }
 
-        std::wstring property_extra_declaration;
+        property_decl.append(STR(" "));
+        write_property_name(property_decl, property);
         if (property->GetArrayDim() != 1)
         {
-            property_extra_declaration.append(STR("["));
-            property_extra_declaration.append(std::to_wstring(property->GetArrayDim()));
-            property_extra_declaration.append(STR("]"));
+            std::format_to(std::back_inserter(property_decl), STR("[{}]"), property->GetArrayDim());
         }
         else if (is_bitmask_bool)
         {
-            property_extra_declaration.append(STR(": 1"));
+            property_decl.append(STR(": 1"));
         }
+        property_decl.append(STR(";"));
 
-        header_data.append_line(std::format(STR("UPROPERTY({})"), property_flags_string));
-        header_data.append_line(std::format(STR("{} {}{};"), property_type_string, fix_cpp_keyword_name(property->GetName()), property_extra_declaration));
+        header_data.append_line(std::format(STR("UPROPERTY({})"), property_flags));
+        header_data.append_line(property_decl);
         header_data.append_line(STR(""));
     }
 
@@ -1608,6 +1611,7 @@ namespace RC::UEGenerator
         {
             FStructProperty* struct_property = static_cast<FStructProperty*>(property);
             UScriptStruct* script_struct = struct_property->GetStruct();
+            FName struct_name = script_struct->GetNamePrivate();
             if (!script_struct)
             {
                 Output::send<LogLevel::Error>(STR("Struct is NULL for StructProperty in {}\n"), property->GetFullName());
@@ -1621,7 +1625,7 @@ namespace RC::UEGenerator
                 void const* arch_value = archetype ? struct_property->ContainerPtrToValuePtr<void>(archetype, index) : nullptr;
 
                 static FName NAME_Transform{STR("Transform"), FNAME_Add};
-                if (NAME_Transform == script_struct->GetNamePrivate())
+                if (NAME_Transform == struct_name)
                 {
                     auto& value = *property->ContainerPtrToValuePtr<FTransform>(const_cast<void*>(object), index);
                     auto& rot = value.GetRotation();
@@ -1635,12 +1639,16 @@ namespace RC::UEGenerator
                     continue;
                 }
                 static FName NAME_SoftObjectPath{STR("SoftObjectPath"), FNAME_Add};
-                if (NAME_SoftObjectPath == script_struct->GetNamePrivate())
+                static FName NAME_SoftClassPath{STR("SoftClassPath"), FNAME_Add};
+                if (NAME_SoftObjectPath == struct_name || NAME_SoftClassPath == struct_name)
                 {
                     auto& value = *property->ContainerPtrToValuePtr<FSoftObjectPath>(const_cast<void*>(object), index);
-                    auto value_str = value.AssetPathName == NAME_None
-                                             ? STR("FSoftObjectPath()")
-                                             : std::format(STR("FSoftObjectPath(TEXT(\"{}\"), TEXT(\"\"))"), value.AssetPathName.ToString(), value.SubPathString.GetCharArray());
+                    auto native_name = get_native_struct_name(script_struct);
+                    auto value_str = value.AssetPathName == NAME_None ? std::format(STR("{}()"), native_name)
+                                                                      : std::format(STR("{}(TEXT(\"{}\"), TEXT(\"\"))"),
+                                                                                    native_name,
+                                                                                    value.AssetPathName.ToString(),
+                                                                                    value.SubPathString.GetCharArray());
                     generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     continue;
                 }
@@ -2666,7 +2674,9 @@ namespace RC::UEGenerator
         FlagFormatHelper flag_format_helper{};
         auto property_flags = property->GetPropertyFlags();
 
-        if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite)
+        bool deprecated = property_flags & CPF_Deprecated;
+
+        if (!deprecated && UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite)
         {
             flag_format_helper.add_switch(STR("EditAnywhere"));
         }
@@ -2721,7 +2731,11 @@ namespace RC::UEGenerator
             flag_format_helper.add_switch(STR("AdvancedDisplay"));
         }
 
-        if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite)
+        if (deprecated)
+        {
+            // nothing
+        }
+        else if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite)
         {
             if (property->GetArrayDim() == 1 && is_subtype_valid(property))
             {
