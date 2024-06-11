@@ -1189,7 +1189,7 @@ namespace RC::UEGenerator
         }
         return nullptr;
     }
-    auto UEHeaderGenerator::gen_id() -> uint32_t
+    auto GeneratedSourceFile::gen_id() -> uint32_t
     {
         return m_gen_id++;
     }
@@ -1200,7 +1200,7 @@ namespace RC::UEGenerator
         UStruct* outer = Cast<UStruct>(prop->GetOutermostOwner());
         return is_private && outer != this_struct || is_protected && !this_struct->IsChildOf(outer);
     }
-    auto UEHeaderGenerator::is_default_value(FProperty* property, void const* object, void const* archetype, int32 index)
+    auto UEHeaderGenerator::is_default_value(FProperty* property, void const* object, void const* archetype, int32_t index)
         -> bool
     {
         if (archetype) return property->Identical_InContainer(object, archetype, index);
@@ -1232,6 +1232,12 @@ namespace RC::UEGenerator
         {
             auto &value = *property->ContainerPtrToValuePtr<FSoftObjectPath>(object, index);
             return value.AssetPathName == NAME_None;
+        }
+        if (property->IsA<FMulticastSparseDelegateProperty>())
+        {
+            auto prop = static_cast<FMulticastSparseDelegateProperty*>(property);
+            auto& value = prop->GetPropertyValueInContainer(object, index);
+            return !value.b_is_bound;
         }
         char default_value[16] = {};
         if (sizeof(default_value) < property->GetElementSize() || !(property->GetPropertyFlags() & CPF_ZeroConstructor))
@@ -1298,7 +1304,7 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::generate_assignment_expression(UStruct* this_struct,
                                                            FProperty* property,
-                                                           int32 index,
+                                                           int32_t index,
                                                            std::wstring_view value,
                                                            GeneratedSourceFile& implementation_file,
                                                            PropertyScope& property_scope,
@@ -1309,6 +1315,12 @@ namespace RC::UEGenerator
         property_scope.pop();
     }
 
+    auto UEHeaderGenerator::generate_soft_path(std::wstring_view kind, FSoftObjectPath const& value) -> std::wstring
+    {
+        return value.AssetPathName == NAME_None
+            ? std::format(STR("{}()"), kind)
+            : std::format(STR("{}(TEXT(\"{}\"), TEXT(\"\"))"), kind, value.AssetPathName.ToString(), value.SubPathString.GetCharArray());
+    }
     auto UEHeaderGenerator::generate_property_assignment(UStruct* this_struct,
                                                          UStruct* ustruct,
                                                          FProperty* property,
@@ -1444,7 +1456,7 @@ namespace RC::UEGenerator
                 }
                 // auto package = value->GetOuterPrivate();
                 // if (value->HasAllFlags(static_cast<EObjectFlags>(RF_Public | RF_Standalone)) && !package->GetOuterPrivate())
-                auto finder_id = gen_id();
+                auto finder_id = implementation_file.gen_id();
                 implementation_file.append_line(std::format(STR("static ConstructorHelpers::FObjectFinder<UClass> gen{}(TEXT(\"{}\"));"), finder_id, value->GetPathName()));
                 auto value_str = std::format(STR("gen{}.Object"), finder_id);
                 generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
@@ -1595,34 +1607,87 @@ namespace RC::UEGenerator
 
                     auto value_str = std::format(STR("{}::StaticClass()"), get_native_class_name(val));
                     generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
-                    return;
+                    continue;
                 }
+                if (value->HasAnyFlags(RF_ClassDefaultObject))
+                {
+                    implementation_file.add_dependency_object(value_class, DependencyLevel::Include);
+                    auto class_name = get_native_class_name(value_class);
+                    auto value_str = std::format(STR("GetMutableDefault<{}>({}::StaticClass())"), class_name, class_name);
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
+                    continue;
+                }
+                if (value->HasAnyFlags(RF_Public))
+                {
+                    auto finder_id = implementation_file.gen_id();
+                    implementation_file.add_dependency_object(value->GetClassPrivate(), DependencyLevel::Include);
+                    implementation_file.append_line(std::format(STR("static ConstructorHelpers::FObjectFinder<{}> gen{}(TEXT(\"{}\"));"),
+                                                                get_native_class_name(value_class),
+                                                                finder_id,
+                                                                value->GetPathName()));
+                    auto value_str = std::format(STR("gen{}.Object"), finder_id);
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
+                    continue;
+                }
+                Output::send<LogLevel::Warning>(STR("Non-public non-default subobject {} is unimplemented in {}\n"), value->GetFullName(), property->GetFullName());
+            }
+            return;
+        }
+        if (property->IsA<FSoftObjectProperty>())
+        {
+            auto prop = static_cast<FSoftObjectProperty*>(property);
+            for (int32 index = 0; index < property->GetArrayDim(); ++index)
+            {
+                if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
 
-                auto finder_id = gen_id();
-                implementation_file.add_dependency_object(value->GetClassPrivate(), DependencyLevel::Include);
-                implementation_file.append_line(std::format(STR("static ConstructorHelpers::FObjectFinder<{}> gen{}(TEXT(\"{}\"));"), get_native_class_name(value_class), finder_id, value->GetPathName()));
-                auto value_str = std::format(STR("gen{}.Object"), finder_id);
-                generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
-                // Output::send<LogLevel::Warning>(STR("Unhandled default value of the FObjectProperty {} = {}\n"), property->GetFullName(), value->GetFullName());
+                auto& value = prop->GetPropertyValueInContainer(object, index);
+                if (value.ObjectID.AssetPathName == NAME_None)
+                {
+                    generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
+                }
+                else
+                {
+                    auto value_str = generate_soft_path(STR("FSoftObjectPath"), value.ObjectID);
+                    generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
+                }
+            }
+            return;
+        }
+        if (property->IsA<FWeakObjectProperty>())
+        {
+            auto prop = static_cast<FWeakObjectProperty*>(property);
+            for (int32 index = 0; index < property->GetArrayDim(); ++index)
+            {
+                if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
+
+                auto value = prop->GetPropertyValueInContainer(object, index).Get();
+                if (!value)
+                {
+                    generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
+                }
+                else
+                {
+                    Output::send<LogLevel::Warning>(STR("Non-null FWeakObjectProperty is unimplemented in {}\n"), property->GetFullName());
+                }
             }
             return;
         }
         if (property->IsA<FStructProperty>())
         {
-            FStructProperty* struct_property = static_cast<FStructProperty*>(property);
-            UScriptStruct* script_struct = struct_property->GetStruct();
+            auto prop = static_cast<FStructProperty*>(property);
+            UScriptStruct* script_struct = prop->GetStruct();
             FName struct_name = script_struct->GetNamePrivate();
             if (!script_struct)
             {
-                Output::send<LogLevel::Error>(STR("Struct is NULL for StructProperty in {}\n"), property->GetFullName());
+                Output::send<LogLevel::Error>(STR("Struct is null for StructProperty in {}\n"), property->GetFullName());
                 return;
             }
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
 
-                void const* value = struct_property->ContainerPtrToValuePtr<void>(object, index);
-                void const* arch_value = archetype ? struct_property->ContainerPtrToValuePtr<void>(archetype, index) : nullptr;
+                void const* value = prop->ContainerPtrToValuePtr<void>(object, index);
+                void const* arch_value = archetype ? prop->ContainerPtrToValuePtr<void>(archetype, index) : nullptr;
 
                 static FName NAME_Transform{STR("Transform"), FNAME_Add};
                 if (NAME_Transform == struct_name)
@@ -1644,11 +1709,7 @@ namespace RC::UEGenerator
                 {
                     auto& value = *property->ContainerPtrToValuePtr<FSoftObjectPath>(const_cast<void*>(object), index);
                     auto native_name = get_native_struct_name(script_struct);
-                    auto value_str = value.AssetPathName == NAME_None ? std::format(STR("{}()"), native_name)
-                                                                      : std::format(STR("{}(TEXT(\"{}\"), TEXT(\"\"))"),
-                                                                                    native_name,
-                                                                                    value.AssetPathName.ToString(),
-                                                                                    value.SubPathString.GetCharArray());
+                    auto value_str = generate_soft_path(native_name, value);
                     generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     continue;
                 }
@@ -1672,15 +1733,19 @@ namespace RC::UEGenerator
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
                 FScriptArray const* value = property->ContainerPtrToValuePtr<FScriptArray>(object);
 
-                auto id = gen_id();
-                property_scope.push(property, index);
-                implementation_file.append_line(std::format(STR("auto& gen{} = {};"), id, property_scope.access(this_struct, implementation_file)));
-                property_scope.pop();
-                implementation_file.append_line(std::format(STR("gen{}.Empty();"), id));
                 if (value->Num())
                 {
+                    auto id = implementation_file.gen_id();
+                    property_scope.push(property, index);
+                    implementation_file.append_line(std::format(STR("auto& gen{} = {};"), id, property_scope.access(this_struct, implementation_file)));
+                    property_scope.pop();
+                    implementation_file.append_line(std::format(STR("gen{}.Empty();"), id));
                     implementation_file.append_line(std::format(STR("gen{}.AddDefaulted({});"), id, value->Num()));
                     Output::send<LogLevel::Warning>(STR("FArrayProperty default value is incorrectly implemented in {}\n"), property->GetFullName());
+                }
+                else
+                {
+                    generate_assignment_expression(this_struct, property, index, STR(""), implementation_file, property_scope, STR(".Empty()"));
                 }
             }
             return;
@@ -1723,6 +1788,28 @@ namespace RC::UEGenerator
                     }
                 }
                 generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
+            }
+            return;
+        }
+        if (property->IsA<FMulticastDelegateProperty>())
+        {
+            auto prop = static_cast<FMulticastDelegateProperty*>(property);
+            for (int32 index = 0; index < property->GetArrayDim(); ++index)
+            {
+                if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
+
+                Output::send<LogLevel::Warning>(STR("FMulticastDelegateProperty is unimplemented in {}\n"), property->GetFullName());
+            }
+            return;
+        }
+        if (property->IsA<FDelegateProperty>())
+        {
+            auto prop = static_cast<FDelegateProperty*>(property);
+            for (int32 index = 0; index < property->GetArrayDim(); ++index)
+            {
+                if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
+
+                Output::send<LogLevel::Warning>(STR("FDelegateProperty is unimplemented in {}\n"), property->GetFullName());
             }
             return;
         }

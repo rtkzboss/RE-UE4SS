@@ -9,6 +9,7 @@
 #include <File/File.hpp>
 #include <SDKGenerator/Common.hpp>
 #include <Unreal/Property/FObjectProperty.hpp>
+#include <Unreal/Property/FSoftObjectProperty.hpp>
 #pragma warning(disable : 4005)
 #include <Unreal/NameTypes.hpp>
 #pragma warning(default : 4005)
@@ -34,6 +35,7 @@ namespace RC::UEGenerator
     using UClass = RC::Unreal::UClass;
     using FProperty = RC::Unreal::FProperty;
     using FObjectProperty = RC::Unreal::FObjectProperty;
+    using FSoftObjectPath = RC::Unreal::FSoftObjectPath;
     using FField = RC::Unreal::FField;
     using UEnum = RC::Unreal::UEnum;
     using UScriptStruct = RC::Unreal::UScriptStruct;
@@ -151,6 +153,7 @@ namespace RC::UEGenerator
         GeneratedSourceFile* m_header_file;
         bool m_is_implementation_file;
         bool m_needs_get_type_hash;
+        uint32_t m_gen_id = 0;
 
       public:
         std::wstring m_implementation_constructor;
@@ -163,6 +166,8 @@ namespace RC::UEGenerator
         GeneratedSourceFile(const GeneratedSourceFile&) = delete;
         GeneratedSourceFile(GeneratedSourceFile&&) = default;
         auto operator=(const GeneratedSourceFile&) -> void = delete;
+
+        auto gen_id() -> uint32_t;
 
         auto set_header_file(GeneratedSourceFile* header_file) -> void;
         auto add_dependency_object(UObject* object, DependencyLevel dependency_level) -> void;
@@ -242,8 +247,6 @@ namespace RC::UEGenerator
         // Storage for class defaultsubojects when populating property initializers
         std::unordered_map<FName, FObjectProperty*> m_class_subobjects;
 
-        uint32_t m_gen_id = 0;
-
       public:
         UEHeaderGenerator(const FFilePath& root_directory);
         ~UEHeaderGenerator();
@@ -311,9 +314,9 @@ namespace RC::UEGenerator
                                               int32_t* out_num_params = NULL) -> std::wstring;
         auto generate_default_property_value(FProperty* property, GeneratedSourceFile& header_data, std::wstring_view ContextName) -> std::wstring;
 
-        auto gen_id() -> uint32_t;
         auto is_default_value(FProperty* prop, void const* object, void const* archetype, int32_t index) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
+        auto generate_soft_path(std::wstring_view kind, FSoftObjectPath const& path) -> std::wstring;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value) -> std::wstring;
         auto generate_assignment_expression(UStruct* this_struct,
                                             FProperty* property,
