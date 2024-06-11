@@ -496,6 +496,10 @@ namespace RC::UEGenerator
         header_data.append_line(STR("};"));
     }
 
+    auto generate_virtual_body(std::wstring_view name, std::wstring_view ret_stmt, bool is_pure_virtual) -> std::wstring
+    {
+        return is_pure_virtual ? std::format(STR("PURE_VIRTUAL({}, {});"), name, ret_stmt) : std::format(STR("{{ {} }}"), ret_stmt);
+    }
     auto UEHeaderGenerator::generate_object_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
         const std::wstring class_native_name = get_native_class_name(uclass);
@@ -525,6 +529,7 @@ namespace RC::UEGenerator
         }
 
         std::wstring interface_list_string;
+        bool is_abstract = uclass->GetClassFlags() & CLASS_Abstract;
         auto implemented_interfaces = uclass->GetInterfaces();
 
         for (const RC::Unreal::FImplementedInterface& uinterface : implemented_interfaces)
@@ -639,8 +644,9 @@ namespace RC::UEGenerator
                     static auto MovieSceneEvalTemplatePtr =
                             UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/MovieScene.MovieSceneEvalTemplatePtr"));
                     header_data.add_dependency_object(MovieSceneEvalTemplatePtr, DependencyLevel::Include);
-                    header_data.append_line(STR("virtual FMovieSceneEvalTemplatePtr CreateTemplateForSection(const UMovieSceneSection& InSection) const "
-                                                "PURE_VIRTUAL(CreateTemplateForSection,return {};);"));
+                    header_data.append_line(std::format(
+                            STR("virtual FMovieSceneEvalTemplatePtr CreateTemplateForSection(const UMovieSceneSection& InSection) const override {}"),
+                            generate_virtual_body(STR("CreateTemplateForSection"), STR("return {};"), is_abstract)));
                 }
                 static const auto NAME_AbilitySystemInterface = FName(STR("AbilitySystemInterface"), FNAME_Add);
                 if (name == NAME_AbilitySystemInterface)
@@ -648,25 +654,34 @@ namespace RC::UEGenerator
                     static auto AbilitySystemComponent =
                             UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/GameplayAbilities.AbilitySystemComponent"));
                     header_data.add_dependency_object(AbilitySystemComponent, DependencyLevel::PreDeclaration);
-                    header_data.append_line(STR("virtual UAbilitySystemComponent* GetAbilitySystemComponent() const "
-                                                "PURE_VIRTUAL(GetAbilitySystemComponent,return nullptr;);"));
+                    header_data.append_line(std::format(STR("virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override {}"),
+                                                        generate_virtual_body(STR("GetAbilitySystemComponent"), STR("return nullptr;"), is_abstract)));
                 }
                 static const auto NAME_Interface_PostProcessVolume = FName(STR("Interface_PostProcessVolume"), FNAME_Add);
                 if (name == NAME_Interface_PostProcessVolume)
                 {
                     // FVector is in CoreMinimal.h
-                    header_data.append_line(STR("virtual bool EncompassesPoint(FVector Point, float SphereRadius/*=0.f*/, float* OutDistanceToPoint) "
-                                                "PURE_VIRTUAL(EncompassesPoint,return false;);"));
+                    header_data.append_line(std::format(STR("virtual bool EncompassesPoint(FVector Point, float SphereRadius/*=0.f*/, float* OutDistanceToPoint) override {}"), generate_virtual_body(STR("EncompassesPoint"), STR("return false;"), is_abstract)));
                     // FPostProcessVolumeProperties is declared in Interface_PostProcessVolume.h and not reflected
-                    header_data.append_line(STR("virtual FPostProcessVolumeProperties GetProperties() const "
-                                                "PURE_VIRTUAL(GetProperties,return {};);"));
+                    header_data.append_line(std::format(STR("virtual FPostProcessVolumeProperties GetProperties() const override {}"),
+                                                        generate_virtual_body(STR("GetProperties"), STR("return {};"), is_abstract)));
                 }
                 static const auto NAME_BlendableInterface = FName(STR("BlendableInterface"), FNAME_Add);
                 if (name == NAME_BlendableInterface)
                 {
-                    header_data.append_line(STR("virtual void OverrideBlendableSettings(class FSceneView& View, float Weight) const "
-                                                "PURE_VIRTUAL(OverrideBlendableSettings,);"));
+                    header_data.append_line(std::format(STR("virtual void OverrideBlendableSettings(class FSceneView& View, float Weight) const override {}"),
+                                                        generate_virtual_body(STR("OverrideBlendableSettings"), STR(""), is_abstract)));
                 }
+            }
+        }
+        for (auto klass = uclass; klass; klass = klass->GetSuperClass())
+        {
+            auto name = klass->GetNamePrivate();
+            static const auto NAME_TickableWorldSubsystem = FName(STR("TickableWorldSubsystem"), FNAME_Add);
+            if (name == NAME_TickableWorldSubsystem)
+            {
+                header_data.append_line(std::format(STR("virtual TStatId GetStatId() const override {}"),
+                                                    generate_virtual_body(STR("GetStatId"), STR("return {};"), is_abstract)));
             }
         }
 
