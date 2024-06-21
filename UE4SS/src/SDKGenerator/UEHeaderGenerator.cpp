@@ -1492,9 +1492,34 @@ namespace RC::UEGenerator
 
                 if (!value)
                 {
-                    // If object value is NULL, generate a simple NULL constant
-                    // TODO: Needs additional checks to see if the class is abstract to potentially change this to a default object init
-                    generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
+                    // If object value is NULL, generate a simple NULL constant or a subobject initializer
+                    auto default_subobject_name = NAME_None;
+                    if (auto uclass = Cast<UClass>(ustruct))
+                    {
+                        for (UClass* super = uclass->GetSuperClass(); super; super = super->GetSuperClass())
+                        {
+                            if (!prop->IsInContainer(super)) break;
+                            auto super_archetype = super->GetClassDefaultObject();
+
+                            UObject* super_value = prop->GetPropertyValueInContainer(super_archetype);
+                            if (!super_value) continue;
+                            if (super_value->HasAnyFlags(RF_DefaultSubObject))
+                            {
+                                default_subobject_name = super_value->GetNamePrivate();
+                                break;
+                            }
+                        }
+                    }
+                    if (default_subobject_name == NAME_None)
+                    {
+                        generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
+                    }
+                    else if (!m_class_subobjects.contains(default_subobject_name))
+                    {
+                        implementation_file.m_implementation_constructor.append(
+                                std::format(STR(".DoNotCreateDefaultSubobject(TEXT(\"{}\"))"), default_subobject_name.ToString()));
+                        m_class_subobjects.try_emplace(default_subobject_name, prop);
+                    }
                     continue;
                 }
                 UClass* value_class = value->GetClassPrivate();
@@ -1511,29 +1536,41 @@ namespace RC::UEGenerator
                         if (value_class == super_value_class && value_name == super_name) continue;
                     }
 
-                    // Check to see if any other property in the super initialized a component with the same name to ensure
+                    // Check to see if any property in any super initialized a component with the same name to ensure
                     // we are not creating the subobject in a child class unnecessarily.
-                    bool parent_component_found = false;
-                    if (super_value)
+                    FObjectProperty* parent_component_prop = nullptr;
+                    for (UClass* parent = Cast<UClass>(ustruct)->GetSuperClass(); parent; parent = parent->GetSuperClass())
                     {
-                        for (UStruct* super = ustruct->GetSuperStruct(); super; super = super->GetSuperStruct())
+                        auto parent_archetype = parent->GetClassDefaultObject();
+                        for (UStruct* st = parent; st; st = st->GetSuperStruct())
                         {
-                            for (FProperty* super_property : super->ForEachProperty())
+                            for (FProperty* parent_property : st->ForEachProperty())
                             {
-                                if (!super_property->IsA<FObjectProperty>()) continue;
+                                if (!parent_property->IsA<FObjectProperty>()) continue;
 
-                                FObjectProperty* super_prop = static_cast<FObjectProperty*>(super_property);
-                                UObject* super_other = *super_prop->ContainerPtrToValuePtr<UObject*>(archetype);
-                                if (!super_other) continue;
+                                FObjectProperty* parent_prop = static_cast<FObjectProperty*>(parent_property);
+                                auto parent_value = parent_prop->GetPropertyValueInContainer(parent_archetype);
+                                if (!parent_value) continue;
 
-                                FName super_other_name = super_other->GetNamePrivate();
-                                if (super_other_name == value_name)
+                                FName parent_value_name = parent_value->GetNamePrivate();
+                                if (parent_value_name == value_name)
                                 {
-                                    parent_component_found = true;
+                                    parent_component_prop = parent_prop;
                                     break;
                                 }
                             }
                         }
+                    }
+                    if (parent_component_prop && !m_class_subobjects.contains(value_name))
+                    {
+                        if (value_class != super_value_class)
+                        {
+                            // Add an objectinitializer default subobject class override to the constructor
+                            implementation_file.add_dependency_object(value_class, DependencyLevel::Include);
+                            implementation_file.m_implementation_constructor.append(
+                                    std::format(STR(".SetDefaultSubobjectClass<{}>(TEXT(\"{}\"))"), get_native_class_name(value_class), value_name.ToString()));
+                        }
+                        m_class_subobjects.try_emplace(value_name, parent_component_prop);
                     }
 
                     // Generate an initializer by either setting this property to a pre-existing property
@@ -1542,25 +1579,20 @@ namespace RC::UEGenerator
                     {
                         // Set property to equal previous property referencing the same object
                         FObjectProperty* prior_prop = it->second;
-                        auto fetch = prior_prop->GetFName().ToString();
-                        if (needs_advanced_access(ustruct, prior_prop))
+                        if (prior_prop != prop) // another property may have inserted parent_component_prop == propr
                         {
-                            UObject* prior_value = prior_prop->GetPropertyValueInContainer(object, index);
-                            auto prior_class = get_native_class_name(prior_value->GetClassPrivate());
-                            // auto prior_class = get_native_class_name(prior_prop->GetPropertyClass());
-                            implementation_file.append_line(std::format(STR("FProperty* p_{}_Prior = GetClass()->FindPropertyByName(\"{}\");"), fetch, fetch));
-                            fetch = std::format(STR("*p_{}_Prior->ContainerPtrToValuePtr<{}*>(this)"), fetch, prior_class);
+                            auto fetch = prior_prop->GetFName().ToString();
+                            if (needs_advanced_access(ustruct, prior_prop))
+                            {
+                                UObject* prior_value = prior_prop->GetPropertyValueInContainer(object, index);
+                                auto prior_class = get_native_class_name(prior_value->GetClassPrivate());
+                                // auto prior_class = get_native_class_name(prior_prop->GetPropertyClass());
+                                implementation_file.append_line(std::format(STR("FProperty* p_{}_Prior = GetClass()->FindPropertyByName(\"{}\");"), fetch, fetch));
+                                fetch = std::format(STR("*p_{}_Prior->ContainerPtrToValuePtr<{}*>(this)"), fetch, prior_class);
+                            }
+                            auto value_str = std::format(STR("({}*){}"), get_native_class_name(prop->GetPropertyClass()), fetch);
+                            generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);   
                         }
-                        auto value_str = std::format(STR("({}*){}"), get_native_class_name(prop->GetPropertyClass()), fetch);
-                        generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
-                    }
-                    else if ((super_value_class && value_class != super_value_class) || parent_component_found)
-                    {
-                        // Add an objectinitializer default subobject class override to the constructor
-                        implementation_file.add_dependency_object(value_class, DependencyLevel::Include);
-                        implementation_file.m_implementation_constructor.append(
-                                std::format(STR(".SetDefaultSubobjectClass<{}>(TEXT(\"{}\"))"), get_native_class_name(value_class), value_name.ToString()));
-                        m_class_subobjects.try_emplace(value_name, prop);
                     }
                     else
                     {
