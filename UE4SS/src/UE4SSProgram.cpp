@@ -12,7 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <unordered_set>
-
+#include <fmt/chrono.h>
 #include <Profiler/Profiler.hpp>
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <ExceptionHandling.hpp>
@@ -54,6 +54,8 @@
 #include <Unreal/UnrealInitializer.hpp>
 #include <Unreal/World.hpp>
 #include <UnrealDef.hpp>
+
+#include <polyhook2/PE/IatHook.hpp>
 
 namespace RC
 {
@@ -174,7 +176,7 @@ namespace RC
             }
             catch (std::exception& e)
             {
-                create_emergency_console_for_early_error(std::format(STR("The IniParser failed to parse: {}"), to_wstring(e.what())));
+                create_emergency_console_for_early_error(fmt::format(STR("The IniParser failed to parse: {}"), to_wstring(e.what())));
                 return;
             }
 
@@ -197,7 +199,7 @@ namespace RC
             {
                 m_console_device = &Output::set_default_devices<Output::ConsoleDevice>();
                 m_console_device->set_formatter([](File::StringViewType string) -> File::StringType {
-                    return std::format(STR("[{}] {}"), std::format(STR("{:%X}"), std::chrono::system_clock::now()), string);
+                    return fmt::format(STR("[{}] {}"), fmt::format(STR("{:%X}"), std::chrono::system_clock::now()), string);
                 });
                 if (settings_manager.Debug.DebugConsoleVisible)
                 {
@@ -219,9 +221,9 @@ namespace RC
                          UE4SS_LIB_VERSION_MAJOR,
                          UE4SS_LIB_VERSION_MINOR,
                          UE4SS_LIB_VERSION_HOTFIX,
-                         std::format(L"{}", UE4SS_LIB_VERSION_PRERELEASE == 0 ? L"" : std::format(L" PreRelease #{}", UE4SS_LIB_VERSION_PRERELEASE)),
-                         std::format(L"{}",
-                                     UE4SS_LIB_BETA_STARTED == 0 ? L"" : (UE4SS_LIB_IS_BETA == 0 ? L" Beta #?" : std::format(L" Beta #{}", UE4SS_LIB_VERSION_BETA))),
+                         fmt::format(L"{}", UE4SS_LIB_VERSION_PRERELEASE == 0 ? L"" : fmt::format(L" PreRelease #{}", UE4SS_LIB_VERSION_PRERELEASE)),
+                         fmt::format(L"{}",
+                                     UE4SS_LIB_BETA_STARTED == 0 ? L"" : (UE4SS_LIB_IS_BETA == 0 ? L" Beta #?" : fmt::format(L" Beta #{}", UE4SS_LIB_VERSION_BETA))),
                          to_wstring(UE4SS_LIB_BUILD_GITSHA));
 
 #ifdef __clang__
@@ -262,11 +264,11 @@ namespace RC
 
             Unreal::UnrealInitializer::SetupUnrealModules();
 
+            setup_mod_directory_path();
+
             setup_mods();
             install_cpp_mods();
             start_cpp_mods(IsInitialStartup::Yes);
-
-            setup_mod_directory_path();
 
             if (m_has_game_specific_config)
             {
@@ -377,19 +379,18 @@ namespace RC
         // At that point, the working directory will be "root/<GameName>"
         m_working_directory = m_root_directory;
 
-        // Default file to open if there is no game specific config
-        m_default_settings_path_and_file = m_root_directory / m_settings_file_name;
-
         wchar_t exe_path_buffer[1024];
         GetModuleFileNameW(GetModuleHandle(nullptr), exe_path_buffer, 1023);
         std::filesystem::path game_exe_path = exe_path_buffer;
         std::filesystem::path game_directory_path = game_exe_path.parent_path();
+        m_legacy_root_directory = game_directory_path;
+
         m_working_directory = m_root_directory;
         m_mods_directory = m_working_directory / "Mods";
-        m_game_executable_directory = game_directory_path /*game_exe_path.parent_path()*/;
+        m_game_executable_directory = game_directory_path;
         m_settings_path_and_file = m_root_directory;
         m_game_path_and_exe_name = game_exe_path;
-        m_object_dumper_output_directory = m_game_executable_directory;
+        m_object_dumper_output_directory = m_working_directory;
 
         // Allow loading of DLLs from the game directory
         AddDllDirectory(game_exe_path.c_str());
@@ -409,12 +410,23 @@ namespace RC
                 m_settings_path_and_file = std::move(item.path());
                 m_log_directory = m_working_directory;
                 m_object_dumper_output_directory = m_working_directory;
+                m_legacy_root_directory = m_legacy_root_directory / item.path();
                 break;
             }
         }
 
         m_log_directory = m_working_directory;
         m_settings_path_and_file.append(m_settings_file_name);
+
+        // Check for legacy locations and update paths accordingly
+        if (std::filesystem::exists(m_legacy_root_directory / m_settings_file_name) && !std::filesystem::exists(m_settings_path_and_file))
+        {
+            m_settings_path_and_file = m_legacy_root_directory / m_settings_file_name;
+        }
+        if (std::filesystem::exists(m_legacy_root_directory / "Mods") && !std::filesystem::exists(m_mods_directory))
+        {
+            m_mods_directory = m_legacy_root_directory / "Mods";
+        }
     }
 
     auto UE4SSProgram::create_emergency_console_for_early_error(File::StringViewType error_message) -> void
@@ -434,7 +446,14 @@ namespace RC
         }
         else
         {
-            m_mods_directory = settings_manager.Overrides.ModsFolderPath;
+            if (std::filesystem::path{settings_manager.Overrides.ModsFolderPath}.is_relative())
+            {
+                m_mods_directory = m_working_directory / settings_manager.Overrides.ModsFolderPath;
+            }
+            else
+            {
+                m_mods_directory = settings_manager.Overrides.ModsFolderPath;
+            }
         }
     }
 
@@ -445,7 +464,7 @@ namespace RC
             m_debug_console_device = &Output::set_default_devices<Output::DebugConsoleDevice>();
             Output::set_default_log_level<LogLevel::Normal>();
             m_debug_console_device->set_formatter([](File::StringViewType string) -> File::StringType {
-                return std::format(STR("[{}] {}"), std::format(STR("{:%X}"), std::chrono::system_clock::now()), string);
+                return fmt::format(STR("[{}] {}"), fmt::format(STR("{:%X}"), std::chrono::system_clock::now()), string);
             });
 
             if (AllocConsole())
@@ -1047,12 +1066,12 @@ namespace RC
 
     auto UE4SSProgram::install_cpp_mods() -> void
     {
-        install_mods<CppMod>(m_mods);
+        install_mods<CppMod>(get_program().m_mods);
     }
 
     auto UE4SSProgram::install_lua_mods() -> void
     {
-        install_mods<LuaMod>(m_mods);
+        install_mods<LuaMod>(get_program().m_mods);
     }
 
     auto UE4SSProgram::fire_unreal_init_for_cpp_mods() -> void
@@ -1177,7 +1196,7 @@ namespace RC
             }
             if (ec.value() != 0)
             {
-                return std::format("is_directory ran into error {}", ec.value());
+                return fmt::format("is_directory ran into error {}", ec.value());
             }
 
             if (!std::filesystem::exists(mod_directory.path() / "enabled.txt", ec))
@@ -1186,7 +1205,7 @@ namespace RC
             }
             if (ec.value() != 0)
             {
-                return std::format("exists ran into error {}", ec.value());
+                return fmt::format("exists ran into error {}", ec.value());
             }
 
             auto mod = UE4SSProgram::find_mod_by_name<ModType>(mod_directory.path().stem().c_str(), UE4SSProgram::IsInstalled::Yes);
@@ -1344,6 +1363,11 @@ namespace RC
         return m_module_file_path.c_str();
     }
 
+    auto UE4SSProgram::get_game_executable_directory() -> File::StringViewType
+    {
+        return m_game_executable_directory.c_str();
+    }
+
     auto UE4SSProgram::get_working_directory() -> File::StringViewType
     {
         return m_working_directory.c_str();
@@ -1352,6 +1376,11 @@ namespace RC
     auto UE4SSProgram::get_mods_directory() -> File::StringViewType
     {
         return m_mods_directory.c_str();
+    }
+
+    auto UE4SSProgram::get_legacy_root_directory() -> File::StringViewType
+    {
+        return m_legacy_root_directory.c_str();
     }
 
     auto UE4SSProgram::generate_uht_compatible_headers() -> void
@@ -1493,7 +1522,7 @@ namespace RC
     auto UE4SSProgram::find_mod_by_name_internal(std::wstring_view mod_name, IsInstalled is_installed, IsStarted is_started, FMBNI_ExtraPredicate extra_predicate)
             -> Mod*
     {
-        auto mod_exists_with_name = std::find_if(m_mods.begin(), m_mods.end(), [&](auto& elem) -> bool {
+        auto mod_exists_with_name = std::find_if(get_program().m_mods.begin(), get_program().m_mods.end(), [&](auto& elem) -> bool {
             bool found = true;
 
             if (!extra_predicate(elem.get()))
@@ -1517,7 +1546,7 @@ namespace RC
         });
 
         // clang-format off
-        if (mod_exists_with_name == m_mods.end())
+        if (mod_exists_with_name == get_program().m_mods.end())
         {
             return nullptr;
         }

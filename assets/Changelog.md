@@ -2,11 +2,18 @@ v3.1.0
 ==============
 TBD
 
+some notes about most important changes such as:
+- changing of default ue4ss install location, overriding and its backwards compatibility
+- new build system
+- linux port
+
 ## New
 Added support for UE Version 5.4 - ([UE4SS #503](https://github.com/UE4SS-RE/RE-UE4SS/pull/503))
 
 ### General
 UE Platform support, which allows for much easier internal implementation of new Unreal classes ([UEPseudo #80](https://github.com/Re-UE4SS/UEPseudo/pull/80)) - narknon, localcc
+
+Added new installation method by allowing overriding of the location of the `UE4SS.dll`, [documentation](https://docs.ue4ss.com/installation-guide.html#overriding-install-location). - ([UE4SS #506](https://github.com/UE4SS-RE/RE-UE4SS/pull/506)) - Buckminsterfullerene 
 
 ### Live View 
 Added search filter: `IncludeClassNames`. ([UE4SS #472](https://github.com/UE4SS-RE/RE-UE4SS/pull/472)) - Buckminsterfullerene
@@ -37,6 +44,7 @@ This can be used when calling `FileHandle::memory_map`, unlike `OpenFor::Writing
 ## Changes
 
 ### General
+Changed the default location of the UE4SS release assets to be in `game executable directory/ue4ss/`. This change is backwards compatible with the old location. ([UE4SS #506](https://github.com/UE4SS-RE/RE-UE4SS/pull/506)) - Buckminsterfullerene
 
 ### Live View
 Fixed the majority of the lag ([UE4SS #512](https://github.com/UE4SS-RE/RE-UE4SS/pull/512))
@@ -78,6 +86,8 @@ Fixed a crash that would occur randomly due to accidental execution of Live View
 
 Fixed freeze related to the error "Tried to execute UFunction::FuncPtr hook but there was no function map entry" ([UE4SS #468](https://github.com/UE4SS-RE/RE-UE4SS/pull/468))
 
+Fixed `ModsFolderPath` in `UE4SS-settings.ini` not working ([UE4SS #609](https://github.com/UE4SS-RE/RE-UE4SS/pull/609))
+
 ### Live View
 Fixed the "Write to file" checkbox not working for functions in the `Watches` tab ([UE4SS #419](https://github.com/UE4SS-RE/RE-UE4SS/pull/419))
 
@@ -86,6 +96,7 @@ Reduced the likelihood of a crash happening on shutdown when at least one watch 
 Fixed constantly searching even if the search field is empty, and even if not on the tab ([UE4SS #475](https://github.com/UE4SS-RE/RE-UE4SS/pull/475))
 
 ### UHT Dumper
+Fix SetupAttachment implementations randomly changing order ([UE4SS #606](https://github.com/UE4SS-RE/RE-UE4SS/pull/606)) - Buckminsterfullerene
 
 ### Lua API
 Fixed FString use after free ([UE4SS #425](https://github.com/UE4SS-RE/RE-UE4SS/pull/425)) - localcc
@@ -100,6 +111,8 @@ Fixed crash when calling UFunctions that take one or more 'out' params of type T
 Fixed a crash caused by a race condition enabled by C++ mods using `UE4SS_ENABLE_IMGUI` in their constructor ([UE4SS #481](https://github.com/UE4SS-RE/RE-UE4SS/pull/481))
 
 Fixed the `std::span` returned by `FileHandle::memory_map` being improperly sized. ([UE4SS #507](https://github.com/UE4SS-RE/RE-UE4SS/pull/507))
+
+Fixed 'File::Handle' unable to be moved if used in conjunction with memory_map. ([UE4SS #544](https://github.com/UE4SS-RE/RE-UE4SS/pull/544))
 
 ### BPModLoader
 Fixed "bad conversion" errors ([UE4SS #398](https://github.com/UE4SS-RE/RE-UE4SS/pull/398))

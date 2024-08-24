@@ -191,7 +191,7 @@ namespace RC
                 }
                 else
                 {
-                    lua_data.lua.throw_error(std::format(
+                    lua_data.lua.throw_error(fmt::format(
                             "[unreal_script_function_hook] Tried accessing unreal property without a registered handler. Property type '{}' not supported.",
                             to_string(property_type.ToString())));
                 }
@@ -346,7 +346,7 @@ namespace RC
                     }
                     else
                     {
-                        lua_data.lua.throw_error(std::format(
+                        lua_data.lua.throw_error(fmt::format(
                                 "[unreal_script_function_hook] Tried accessing unreal property without a registered handler. Property type '{}' not supported.",
                                 to_string(property_type.ToString())));
                     }
@@ -817,17 +817,17 @@ namespace RC
 
         lua_getfield(lua_state, -1, "path");
         std::string current_paths = lua_tostring(lua_state, -1);
-        current_paths.append(std::format(";{}\\{}\\Scripts\\?.lua", to_string(m_program.get_mods_directory()).c_str(), to_string(get_name())));
-        current_paths.append(std::format(";{}\\shared\\?.lua", to_string(m_program.get_mods_directory()).c_str()));
-        current_paths.append(std::format(";{}\\shared\\?\\?.lua", to_string(m_program.get_mods_directory()).c_str()));
+        current_paths.append(fmt::format(";{}\\{}\\Scripts\\?.lua", to_string(m_program.get_mods_directory()).c_str(), to_string(get_name())));
+        current_paths.append(fmt::format(";{}\\shared\\?.lua", to_string(m_program.get_mods_directory()).c_str()));
+        current_paths.append(fmt::format(";{}\\shared\\?\\?.lua", to_string(m_program.get_mods_directory()).c_str()));
         lua_pop(lua_state, 1);
         lua_pushstring(lua_state, current_paths.c_str());
         lua_setfield(lua_state, -2, "path");
 
         lua_getfield(lua_state, -1, "cpath");
         std::string current_cpaths = lua_tostring(lua_state, -1);
-        current_cpaths.append(std::format(";{}\\{}\\Scripts\\?.dll", to_string(m_program.get_mods_directory()).c_str(), to_string(get_name())));
-        current_cpaths.append(std::format(";{}\\{}\\?.dll", to_string(m_program.get_mods_directory()).c_str(), to_string(get_name())));
+        current_cpaths.append(fmt::format(";{}\\{}\\Scripts\\?.dll", to_string(m_program.get_mods_directory()).c_str(), to_string(get_name())));
+        current_cpaths.append(fmt::format(";{}\\{}\\?.dll", to_string(m_program.get_mods_directory()).c_str(), to_string(get_name())));
         lua_pop(lua_state, 1);
         lua_pushstring(lua_state, current_cpaths.c_str());
         lua_setfield(lua_state, -2, "cpath");
@@ -1698,18 +1698,18 @@ Overloads:
 
                     if (second_field_name.empty())
                     {
-                        error_field_names = std::format("{}", field_name);
+                        error_field_names = fmt::format("{}", field_name);
                     }
                     else if (third_field_name.empty())
                     {
-                        error_field_names = std::format("{}.{}", field_name, second_field_name);
+                        error_field_names = fmt::format("{}.{}", field_name, second_field_name);
                     }
                     else
                     {
-                        error_field_names = std::format("{}.{}.{}", field_name, second_field_name, third_field_name);
+                        error_field_names = fmt::format("{}.{}.{}", field_name, second_field_name, third_field_name);
                     }
 
-                    lua.throw_error(std::format(
+                    lua.throw_error(fmt::format(
                             "Parameter #1 for function 'RegisterCustomProperty'. The table value for key '{}' is outside the range of a 32-bit integer",
                             error_field_names));
                 }
@@ -1778,7 +1778,7 @@ Overloads:
                 Unreal::FProperty* oi_property = belongs_to_class->FindProperty(name);
                 if (!oi_property)
                 {
-                    lua.throw_error(std::format("Was unable to find property '{}' in class '{}' for use for relative Offset_Internal",
+                    lua.throw_error(fmt::format("Was unable to find property '{}' in class '{}' for use for relative Offset_Internal",
                                                 oi_property_name,
                                                 to_string(property_info.belongs_to_class)));
                 }
@@ -1788,14 +1788,14 @@ Overloads:
 
             if (property_info.type.size == 0)
             {
-                lua.throw_error(std::format("The size for property '{}' was unknown. Custom sizes are unsupported but will likely be supported in the future.",
+                lua.throw_error(fmt::format("The size for property '{}' was unknown. Custom sizes are unsupported but will likely be supported in the future.",
                                             property_info.type.name));
             }
 
             if (property_info.is_array_property && property_info.array_inner.size == 0)
             {
                 lua.throw_error(
-                        std::format("The size for inner property '{}' was unknown. Custom sizes are unsupported but will likely be supported in the future.",
+                        fmt::format("The size for inner property '{}' was unknown. Custom sizes are unsupported but will likely be supported in the future.",
                                     property_info.array_inner.name));
             }
 
@@ -2121,8 +2121,8 @@ No overload found for function 'IterateGameDirectories'.
 Overloads:
 #1: IterateGameDirectories()"};
 
-            std::filesystem::path module_directory = UE4SSProgram::get_program().get_module_directory();
-            auto game_content_dir = module_directory.parent_path().parent_path().parent_path() / "Content";
+            std::filesystem::path game_executable_directory = UE4SSProgram::get_program().get_game_executable_directory();
+            auto game_content_dir = game_executable_directory.parent_path().parent_path() / "Content";
             if (!std::filesystem::exists(game_content_dir))
             {
                 Output::send<LogLevel::Warning>(STR("IterateGameDirectories: Could not locate the root directory because the directory structure is unknown "
@@ -2131,8 +2131,8 @@ Overloads:
                 return 1;
             }
 
-            auto game_name = module_directory.parent_path().parent_path().parent_path().stem();
-            auto game_root_directory = module_directory.parent_path().parent_path().parent_path().parent_path();
+            auto game_name = game_executable_directory.parent_path().parent_path().stem();
+            auto game_root_directory = game_executable_directory.parent_path().parent_path().parent_path();
             auto directories_table = lua.prepare_new_table();
 
             std::function<void(const std::filesystem::path&, LuaMadeSimple::Lua::Table&)> iterate_directory =
@@ -2237,8 +2237,8 @@ No overload found for function 'CreateLogicModsDirectory'.
 Overloads:
 #1: CreateLogicModsDirectory()"};
 
-            std::filesystem::path module_directory = UE4SSProgram::get_program().get_module_directory();
-            auto game_content_dir = module_directory.parent_path().parent_path().parent_path() / "Content";
+            std::filesystem::path game_executable_directory = UE4SSProgram::get_program().get_game_executable_directory();
+            auto game_content_dir = game_executable_directory.parent_path().parent_path() / "Content";
             if (!std::filesystem::exists(game_content_dir))
             {
                 lua.throw_error("CreateLogicModsDirectory: Could not locate the \"Content\" directory because the directory structure is unknown (not "
@@ -3042,10 +3042,10 @@ Overloads:
             else
             {
                 std::string error_message{"Was unable to register a hook with Lua function 'RegisterHook', information:\n"};
-                error_message.append(std::format("UFunction::Func: {}\n", std::bit_cast<void*>(func_ptr)));
-                error_message.append(std::format("ProcessInternal: {}\n", Unreal::UObject::ProcessInternalInternal.get_function_address()));
+                error_message.append(fmt::format("UFunction::Func: {}\n", std::bit_cast<void*>(func_ptr)));
+                error_message.append(fmt::format("ProcessInternal: {}\n", Unreal::UObject::ProcessInternalInternal.get_function_address()));
                 error_message.append(
-                        std::format("FUNC_Native: {}\n", static_cast<uint32_t>(unreal_function->HasAnyFunctionFlags(Unreal::EFunctionFlags::FUNC_Native))));
+                        fmt::format("FUNC_Native: {}\n", static_cast<uint32_t>(unreal_function->HasAnyFunctionFlags(Unreal::EFunctionFlags::FUNC_Native))));
                 lua.throw_error(error_message);
             }
 
@@ -3314,7 +3314,7 @@ Overloads:
             return;
         }
 
-        for (const auto& mod : UE4SSProgram::m_mods)
+        for (const auto& mod : UE4SSProgram::get_program().m_mods)
         {
             if (auto cpp_mod = dynamic_cast<CppMod*>(mod.get()); cpp_mod && mod->is_started())
             {
@@ -3334,7 +3334,7 @@ Overloads:
             return;
         }
 
-        for (const auto& mod : UE4SSProgram::m_mods)
+        for (const auto& mod : UE4SSProgram::get_program().m_mods)
         {
             if (auto cpp_mod = dynamic_cast<CppMod*>(mod.get()); cpp_mod && mod->is_started())
             {
@@ -3532,7 +3532,7 @@ Overloads:
                             }
                             else
                             {
-                                lua.throw_error(std::format(
+                                lua.throw_error(fmt::format(
                                         "[script_hook] Tried accessing unreal property without a registered handler. Property type '{}' not supported.",
                                         to_string(param_type.ToString())));
                             }
@@ -4017,7 +4017,7 @@ Overloads:
         // Lua from the in-game console.
         Unreal::Hook::RegisterProcessConsoleExecCallback([](Unreal::UObject* context, const TCHAR* cmd, Unreal::FOutputDevice& ar, Unreal::UObject* executor) -> bool {
             auto logln = [&ar](const File::StringType& log_message) {
-                Output::send(std::format(STR("{}\n"), log_message));
+                Output::send(fmt::format(STR("{}\n"), log_message));
                 ar.Log(log_message.c_str());
             };
 
@@ -4064,20 +4064,20 @@ Overloads:
 
                 LuaLibrary::set_outputdevice_ref(*LuaStatics::console_executor, &ar);
 
-                // logln(std::format(STR("Executing '{}' as Lua"), cmd));
+                // logln(fmt::format(STR("Executing '{}' as Lua"), cmd));
 
                 try
                 {
                     if (int status = luaL_loadstring(LuaStatics::console_executor->get_lua_state(), to_string(cmd).c_str()); status != LUA_OK)
                     {
                         LuaStatics::console_executor->throw_error(
-                                std::format("luaL_loadstring returned {}", LuaStatics::console_executor->resolve_status_message(status, true)));
+                                fmt::format("luaL_loadstring returned {}", LuaStatics::console_executor->resolve_status_message(status, true)));
                     }
 
                     if (int status = lua_pcall(LuaStatics::console_executor->get_lua_state(), 0, LUA_MULTRET, 0); status != LUA_OK)
                     {
                         LuaStatics::console_executor->throw_error(
-                                std::format("lua_pcall returned {}", LuaStatics::console_executor->resolve_status_message(status, true)));
+                                fmt::format("lua_pcall returned {}", LuaStatics::console_executor->resolve_status_message(status, true)));
                     }
                 }
                 catch (std::runtime_error& e)

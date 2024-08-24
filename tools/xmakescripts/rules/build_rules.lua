@@ -102,13 +102,16 @@ local MSVC_COMPILE_OPTIONS = {
         "/wd4068",
         "/Zc:inline",
         "/Zc:strictStrings",
-        "/Zc:preprocessor"
+        "/Zc:preprocessor"  
     },
     ["ldflags"] = {
         "/DEBUG:FULL"
     },
     ["shflags"] = {
         "/DEBUG:FULL"
+    },
+    ["defines"] = {
+        "_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR=1"
     }
 }
 
@@ -271,4 +274,3 @@ rule("ue4ss.dependency")
     on_config(function(target)
         target:set("group", "deps")
     end)
-

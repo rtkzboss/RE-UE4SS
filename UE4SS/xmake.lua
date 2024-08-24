@@ -5,6 +5,8 @@ add_requires("ImGuiTextEdit v1.0", { debug = is_mode_debug(), configs = {runtime
 add_requires("IconFontCppHeaders v1.0", { debug = is_mode_debug(), configs = {runtimes = get_mode_runtimes()}})
 add_requires("glfw 3.3.9", { debug = is_mode_debug() , configs = {runtimes = get_mode_runtimes()}})
 add_requires("opengl", { debug = is_mode_debug(), configs = {runtimes = get_mode_runtimes()} })
+add_requires("glaze v2.9.5", { debug = is_mode_debug(), configs = {runtimes = get_mode_runtimes()} })
+add_requires("fmt 10.2.1", { debug = is_mode_debug(), configs = {runtimes = get_mode_runtimes()} })
 
 option("ue4ssBetaIsStarted")
     set_default(true)
@@ -21,6 +23,14 @@ option("ue4ssIsBeta")
     set_values(true, false)
 
     set_description("Is this a beta release")
+
+option("versionCheck")
+    set_default(true)
+    set_showmenu(true)
+    -- Sets the possible options to only be true or false.
+    set_values(true, false)
+
+    set_description("Will xmake check the installed MSVC and Rust versions on configuration step")
 
 local projectName = "UE4SS"
 
@@ -41,11 +51,12 @@ end
 
 target(projectName)
     set_kind("shared")
-    set_languages("cxx20")
+    set_languages("cxx23")
     set_exceptions("cxx")
     set_default(true)
     add_rules("ue4ss.defines.exports")
-    add_options("ue4ssBetaIsStarted", "ue4ssIsBeta")
+    add_rules("ue4ss.check.minimum.version")
+    add_options("ue4ssBetaIsStarted", "ue4ssIsBeta", "allowAllVersions")
     add_includedirs("include", { public = true })
     add_includedirs("generated_include", { public = true })
     add_headerfiles("include/**.hpp")
@@ -61,6 +72,8 @@ target(projectName)
         "ScopedTimer", "Profiler", "patternsleuth_bind",
         "glad", { public = true }
     )
+    
+    add_packages("fmt", { public = true })
 
     add_packages("imgui", "ImGuiTextEdit", "IconFontCppHeaders", "glfw", "opengl", { public = true })
 

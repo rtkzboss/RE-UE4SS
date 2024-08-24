@@ -1,3 +1,4 @@
+set_xmakever("2.9.3")
 -- We should use `get_config("ue4ssRoot")` instead of `os.projectdir()` or `$(projectdir)`.
 -- This is because os.projectdir() will return a higher parent dir
 -- when UE4SS is sub-moduled/`include("UE4SS")` in another xmake project.
@@ -11,8 +12,11 @@ set_config("buildir", "Intermediates")
 -- /modules/rules/my_module.lua     import("rules.my_module")
 add_moduledirs("tools/xmakescripts/modules")
 
--- Load the build_rules file into the global scope.
-includes("tools/xmakescripts/rules/build_rules.lua")
+-- Add the plugins dir to support custom xmake <command>.
+add_plugindirs("tools/xmakescripts/plugins")
+
+-- Load our rule files into the global scope.
+includes("tools/xmakescripts/rules/**.lua")
 
 -- Generate the mode rules.
 local modes = generate_compilation_modes()
@@ -36,7 +40,7 @@ set_allowedplats("windows")
 set_allowedarchs("x64")
 set_allowedmodes(modes)
 
-if is_plat("windows") then
+if is_host("windows") then
     set_defaultmode("Game__Shipping__Win64")
 end
 
@@ -47,6 +51,7 @@ on_install(function(target) end)
 includes("deps")
 includes("UE4SS")
 includes("UVTD")
+includes("cppmods")
 
 -- TODO: Remove this before the next release. It only exists to maintain backwards compat
 -- warnings for older mod templates.
