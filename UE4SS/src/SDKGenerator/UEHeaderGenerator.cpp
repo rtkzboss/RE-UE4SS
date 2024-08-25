@@ -1353,6 +1353,14 @@ namespace RC::UEGenerator
             ? fmt::format(STR("{}()"), kind)
             : fmt::format(STR("{}(TEXT(\"{}\"), TEXT(\"\"))"), kind, value.AssetPathName.ToString(), value.SubPathString.GetCharArray());
     }
+    auto UEHeaderGenerator::generate_object_finder(std::wstring_view class_name, std::wstring_view path_name, GeneratedSourceFile& implementation_file, bool is_class) -> std::wstring
+    {
+        auto finder_id = implementation_file.gen_id();
+        // XXX: shouldn't really be optional
+        // TODO: class should generate FClassFinder
+        implementation_file.append_line(fmt::format(STR("static ConstructorHelpers::{}<{}> gen{}(TEXT(\"{}\"));"), is_class ? STR("FClassFinder") : STR("FObjectFinder"), class_name, finder_id, path_name));
+        return fmt::format(STR("gen{}.{}"), finder_id, is_class ? STR("Class") : STR("Object"));
+    }
     auto UEHeaderGenerator::generate_property_assignment(UStruct* this_struct,
                                                          UStruct* ustruct,
                                                          FProperty* property,
@@ -1488,9 +1496,8 @@ namespace RC::UEGenerator
                 }
                 // auto package = value->GetOuterPrivate();
                 // if (value->HasAllFlags(static_cast<EObjectFlags>(RF_Public | RF_Standalone)) && !package->GetOuterPrivate())
-                auto finder_id = implementation_file.gen_id();
-                implementation_file.append_line(fmt::format(STR("static ConstructorHelpers::FObjectFinder<UClass> gen{}(TEXT(\"{}\"));"), finder_id, value->GetPathName()));
-                auto value_str = fmt::format(STR("gen{}.Object"), finder_id);
+                implementation_file.add_dependency_object(prop->GetMetaClass(), DependencyLevel::Include);
+                auto value_str = generate_object_finder(get_native_class_name(prop->GetMetaClass()), value->GetPathName(), implementation_file, true);
                 generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                 // Output::send<LogLevel::Warning>(STR("Unhandled default value of the FClassProperty {} = {}\n"), property->GetFullName(), value->GetFullName());
             }
@@ -1683,13 +1690,8 @@ namespace RC::UEGenerator
                 }
                 if (value->HasAnyFlags(RF_Public))
                 {
-                    auto finder_id = implementation_file.gen_id();
                     implementation_file.add_dependency_object(value->GetClassPrivate(), DependencyLevel::Include);
-                    implementation_file.append_line(fmt::format(STR("static ConstructorHelpers::FObjectFinder<{}> gen{}(TEXT(\"{}\"));"),
-                                                                get_native_class_name(value_class),
-                                                                finder_id,
-                                                                value->GetPathName()));
-                    auto value_str = fmt::format(STR("gen{}.Object"), finder_id);
+                    auto value_str = generate_object_finder(get_native_class_name(value_class), value->GetPathName(), implementation_file, false);
                     generate_assignment_expression(this_struct, property, index, value_str, implementation_file, property_scope);
                     continue;
                 }
