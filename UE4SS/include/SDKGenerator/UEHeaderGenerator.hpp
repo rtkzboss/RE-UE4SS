@@ -317,7 +317,7 @@ namespace RC::UEGenerator
         auto is_default_value(FProperty* prop, void const* object, void const* archetype, int32_t index) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
         auto generate_soft_path(std::wstring_view kind, FSoftObjectPath const& path) -> std::wstring;
-        auto generate_object_finder(std::wstring_view class_, std::wstring_view path, GeneratedSourceFile& implementation_file, bool is_class) -> std::wstring;
+        auto generate_object_finder(UClass* class_, std::wstring_view path, GeneratedSourceFile& implementation_file, bool is_class) -> std::wstring;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value) -> std::wstring;
         auto generate_assignment_expression(UStruct* this_struct,
                                             FProperty* property,
