@@ -136,12 +136,18 @@ namespace RC::UEGenerator
         }
     }
 
-    auto string_to_uppercase(std::wstring s) -> std::wstring
+    static auto string_to_uppercase(std::wstring s) -> std::wstring
     {
         std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) {
             return towupper(c);
         });
         return s;
+    }
+    static auto string_contains_ci(std::wstring_view haystack, std::wstring_view needle) -> bool
+    {
+        return std::search(haystack.cbegin(), haystack.cend(), needle.cbegin(), needle.cend(), [](wchar_t a, wchar_t b) {
+                   return std::towlower(a) == std::towlower(b);
+               }) != haystack.end();
     }
 
     auto is_cpp_keyword(std::wstring_view s) -> bool
@@ -3240,31 +3246,29 @@ namespace RC::UEGenerator
         }
 
         static auto latent_action_info = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.LatentActionInfo"));
-        bool bWCFound = false;
-        bool bLAFound = false;
+        bool found_wco = false;
+        bool found_lai = false;
         for (FProperty* param : function->ForEachProperty())
         {
-            auto param_name = param->GetName();
-            auto param_uc_name = string_to_uppercase(param_name);
-            if (param_uc_name.find(STR("WORLDCONTEXT")) != param_uc_name.npos)
+            static auto NAME_InWCO = FName(STR("InWCO"), FNAME_Add);
+            static auto NAME_WCO = FName(STR("WCO"), FNAME_Add);
+            auto param_name = param->GetFName();
+            auto param_name_str = param_name.ToString();
+            if (param_name == NAME_InWCO || param_name == NAME_WCO || string_contains_ci(param_name_str, STR("WorldContext")))
             {
-                flag_format_helper.get_meta()->add_parameter(STR("WorldContext"), param_name);
-                bWCFound = true;
+                flag_format_helper.get_meta()->add_parameter(STR("WorldContext"), param_name_str);
+                found_wco = true;
             }
-            if (auto as_struct_property = CastField<FStructProperty>(param); as_struct_property)
+            if (auto as_struct_property = CastField<FStructProperty>(param))
             {
-                // We now know this is a StructProperty.
                 if (as_struct_property->GetStruct()->IsChildOf(latent_action_info))
                 {
-                    flag_format_helper.get_meta()->add_parameter(STR("LatentInfo"), param_name);
+                    flag_format_helper.get_meta()->add_parameter(STR("LatentInfo"), param_name_str);
                     flag_format_helper.get_meta()->add_switch(STR("Latent"));
-                    bLAFound = true;
+                    found_lai = true;
                 }
             }
-            if (bWCFound && bLAFound)
-            {
-                break;
-            }
+            if (found_wco && found_lai) break;
         }
 
         return flag_format_helper.build_flag_string();
