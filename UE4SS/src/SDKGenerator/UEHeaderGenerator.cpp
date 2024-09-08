@@ -176,6 +176,11 @@ namespace RC::UEGenerator
         return s;
     }
 
+    static auto class_has_config(UClass* uclass) -> bool
+    {
+        return uclass->HasAnyClassFlags(CLASS_Config | CLASS_DefaultConfig | CLASS_GlobalUserConfig | CLASS_ProjectUserConfig);
+    }
+
     class FlagFormatHelper
     {
         std::set<std::wstring> m_switches;
@@ -2329,43 +2334,40 @@ namespace RC::UEGenerator
             flag_format_helper.add_switch(STR("Placeable"));
         }
 
-        bool add_config_name{false};
-
         if ((class_own_flags & CLASS_DefaultConfig) != 0)
         {
             flag_format_helper.add_switch(STR("DefaultConfig"));
-            add_config_name = true;
         }
         if ((class_own_flags & CLASS_GlobalUserConfig) != 0)
         {
             flag_format_helper.add_switch(STR("GlobalUserConfig"));
-            add_config_name = true;
         }
         if ((class_own_flags & CLASS_ProjectUserConfig) != 0)
         {
             flag_format_helper.add_switch(STR("ProjectUserConfig"));
-            add_config_name = true;
         }
-
+        bool has_config_property = false;
         for (FProperty* property : uclass->ForEachProperty())
         {
-            if ((property->GetPropertyFlags() & CPF_Config) != 0 || (property->GetPropertyFlags() & CPF_GlobalConfig) != 0)
+            if (property->HasAnyPropertyFlags(CPF_Config | CPF_GlobalConfig))
             {
-                add_config_name = true;
+                has_config_property = true;
+                break;
             }
         }
-
-        const std::wstring class_config_name = uclass->GetClassConfigName().ToString();
-        if (super_class == NULL || class_config_name != super_class->GetClassConfigName().ToString())
+        bool has_config = class_has_config(uclass);
+        if (has_config_property && !has_config)
         {
-            flag_format_helper.add_parameter(STR("Config"), class_config_name);
-            // Don't add our override config if we add the real one here
-            add_config_name = false;
+            Output::send<LogLevel::Warning>(STR("Class {} has config property but is not config\n"), uclass->GetFullName());
         }
-
-        if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllConfigsEngineConfig && add_config_name)
+        if (has_config)
         {
-            flag_format_helper.add_parameter(STR("Config"), STR("Engine"));
+            auto config_name = uclass->GetClassConfigName();
+            // UObject has ClassConfigName="Engine", but not config, so we must specify
+            if (!super_class || super_class->GetClassConfigName() != config_name || !class_has_config(super_class))
+            {
+                flag_format_helper.add_parameter(STR("Config"), config_name.ToString());
+            }
         }
 
         if ((class_own_flags & CLASS_PerObjectConfig) != 0)
@@ -3797,6 +3799,11 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::dump_native_packages() -> void
     {
         ignore_selected_modules();
+
+        if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllConfigsEngineConfig)
+        {
+            Output::send<LogLevel::Warning>(STR("MakeAllConfigsEngineConfig is deprecated\n"));
+        }
 
         Output::send(STR("Cleaning up previously generated SDK (if one exists)\n"));
         if (std::filesystem::exists(m_root_directory))
