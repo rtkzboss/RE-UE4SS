@@ -10,6 +10,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <cstdlib>
 
 #include <SDKGenerator/UEHeaderGenerator.hpp>
 #pragma warning(disable : 4005)
@@ -49,6 +50,14 @@
 #include <Unreal/UScriptStruct.hpp>
 #include <Unreal/UnrealFlags.hpp>
 #pragma warning(default : 4005)
+
+#ifdef _MSC_VER
+#define ALIGNED_ALLOC(alignment, size) _aligned_malloc(size, alignment)
+#define ALIGNED_FREE(mem) _aligned_free(mem)
+#else
+#define ALIGNED_ALLOC(alignment, size) ::std::aligned_alloc(alignment, size)
+#define ALIGNED_FREE(mem) ::std::free(mem)
+#endif
 
 namespace RC::UEGenerator
 {
@@ -1288,7 +1297,9 @@ namespace RC::UEGenerator
         auto& d = m_struct_defaults[ustruct];
         if (!d)
         {
-            d = calloc(1, ustruct->GetStructureSize());
+            d = ALIGNED_ALLOC(ustruct->GetMinAlignment(), ustruct->GetStructureSize());
+            memset(d, 0, ustruct->GetStructureSize());
+            // TODO: BuildConstantLookupTable (e.g. FFloatDistribution) wants to run in game thread or async loading thread, which we are not
             ustruct->InitializeStruct(d);
         }
         return d;
@@ -1299,7 +1310,7 @@ namespace RC::UEGenerator
         for (auto [ustruct, d] : m_struct_defaults)
         {
             ustruct->DestroyStruct(d);
-            free(d);
+            ALIGNED_FREE(d);
         }
     }
 
