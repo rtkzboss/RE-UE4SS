@@ -529,10 +529,30 @@ namespace RC::UEGenerator
     {
         return is_pure_virtual ? fmt::format(STR("PURE_VIRTUAL({}, {});"), name, ret_stmt) : fmt::format(STR("{{ {} }}"), ret_stmt);
     }
+    static auto should_generate_fobjectinitializer_constructor(UClass* uclass) -> bool
+    {
+        return uclass->IsChildOf<AActor>() || uclass->IsChildOf<UActorComponent>();
+    }
     static auto needs_fobjectinitializer_constructor(UClass* uclass) -> bool
     {
-        static UClass* UListViewBase_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.UListViewBase"));
-        return uclass->IsChildOf<AActor>() || uclass->IsChildOf<UActorComponent>() || uclass->IsChildOf(UListViewBase_StaticClass);
+        static std::unordered_set<UClass*> classes = {
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.AITask")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/OnlineSubsystemUtils.IpNetDriver")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AnimationBudgetAllocator.SkeletalMeshComponentBudgeted")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.SoundWaveProcedural")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/MovieScene.MovieSceneTrack")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.UserWidget")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.DynamicEntryBoxBase")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.ListView")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.ListViewBase")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.RichTextBlock")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.RichTextBlockDecorator")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.RichTextBlockImageDecorator")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.TreeView")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.TileView")),
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/CommonUI.CommonTileView")),
+        };
+        return classes.contains(uclass);
     }
     auto UEHeaderGenerator::generate_object_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
@@ -604,7 +624,7 @@ namespace RC::UEGenerator
 
         // Generate constructor
         append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
-        StringType constructor_args = needs_fobjectinitializer_constructor(uclass) ? STR("const FObjectInitializer& ObjectInitializer") : STR("");
+        CharType const* constructor_args = should_generate_fobjectinitializer_constructor(uclass) ? STR("const FObjectInitializer& ObjectInitializer") : STR("");
         header_data.append_line(fmt::format(STR("{}({});"), class_native_name, constructor_args));
         header_data.append_line_no_indent(STR(""));
 
@@ -970,26 +990,25 @@ namespace RC::UEGenerator
     {
         const std::wstring class_native_name = get_native_class_name(uclass);
 
-        std::wstring constructor_content_string;
-        std::wstring constructor_postfix_string;
+        CharType const* constructor_content_string = STR("");
+        CharType const* constructor_postfix_string = STR("");
         UClass* super_class = uclass->GetSuperClass();
-        const std::wstring native_parent_class_name = super_class ? get_native_class_name(super_class) : STR("UObjectUtility");
+        const std::wstring native_parent_class_name = super_class ? get_native_class_name(super_class) : STR("UObjectBaseUtility");
 
         // Generate constructor implementation except for overrides.
 
         // If class is a child of AActor we add the UObjectInitializer constructor.
         // This may not be required in all cases, but is necessary to override subcomponents and does not hurt anything.
-        std::wstring object_initializer_overrides;
-        if (uclass->IsChildOf<AActor>() || uclass->IsChildOf<UActorComponent>())
+        if (should_generate_fobjectinitializer_constructor(uclass))
         {
-            constructor_content_string.append(STR("const FObjectInitializer& ObjectInitializer"));
-            constructor_postfix_string.append(fmt::format(STR(") : Super(ObjectInitializer{}"), object_initializer_overrides));
+            constructor_content_string = STR("const FObjectInitializer& ObjectInitializer");
+            constructor_postfix_string = STR(") : Super(ObjectInitializer");
         }
         // If parent class contains the UObjectInitializer constructor without default value,
         // we need to create the explicit call to such constructor and pass UObjectInitializer::Get() as the argument.
-        else if (m_classes_with_object_initializer.contains(native_parent_class_name))
+        else if (needs_fobjectinitializer_constructor(uclass->GetSuperClass()))
         {
-            constructor_postfix_string.append(fmt::format(STR(") : {}(FObjectInitializer::Get()"), native_parent_class_name));
+            constructor_postfix_string = STR(") : Super(FObjectInitializer::Get()");
         }
 
         implementation_file.m_implementation_constructor.append(
@@ -3583,18 +3602,6 @@ namespace RC::UEGenerator
         this->m_forced_module_dependencies.insert(STR("CoreUObject"));
         // TODO not optimal, but still needed for the majority of the cases
         this->m_forced_module_dependencies.insert(STR("Engine"));
-
-        // Add few classes that require explicit UObjectInitializer constructor call, excluding classes inheriting from AActor.
-        this->m_classes_with_object_initializer.insert(STR("UUserWidget"));
-        this->m_classes_with_object_initializer.insert(STR("UListView"));
-        this->m_classes_with_object_initializer.insert(STR("UMovieSceneTrack"));
-        this->m_classes_with_object_initializer.insert(STR("USoundWaveProcedural"));
-        this->m_classes_with_object_initializer.insert(STR("URichTextBlock"));
-        this->m_classes_with_object_initializer.insert(STR("URichTextBlockImageDecorator"));
-        this->m_classes_with_object_initializer.insert(STR("URichTextBlockDecorator"));
-        this->m_classes_with_object_initializer.insert(STR("USkeletalMeshComponentBudgeted"));
-        this->m_classes_with_object_initializer.insert(STR("UIpNetDriver"));
-        this->m_classes_with_object_initializer.insert(STR("UAITask"));
     }
 
     auto UEHeaderGenerator::ignore_selected_modules() -> void

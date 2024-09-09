@@ -231,7 +231,6 @@ namespace RC::UEGenerator
 
         std::set<std::wstring> m_forced_module_dependencies;
         std::set<std::wstring> m_ignored_module_names;
-        std::set<std::wstring> m_classes_with_object_initializer;
 
         std::unordered_map<UStruct const*, void*> m_struct_defaults;
         std::unordered_map<UEnum*, FNumericProperty*> m_underlying_enum_props;
