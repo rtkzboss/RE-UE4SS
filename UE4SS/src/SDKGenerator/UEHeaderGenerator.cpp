@@ -579,7 +579,7 @@ namespace RC::UEGenerator
         AccessModifier current_access_modifier = AccessModifier::None;
         append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
 
-        CaseInsensitiveSet blacklisted_property_names = collect_blacklisted_property_names(uclass);
+        CaseInsensitiveSet blacklisted_parameter_names = collect_blacklisted_parameter_names(uclass);
         bool encountered_replicated_properties = false;
 
         // Generate delegate type declarations for the current class
@@ -640,7 +640,7 @@ namespace RC::UEGenerator
             if (!is_delegate_signature_function(function))
             {
                 append_access_modifier(header_data, get_function_access_modifier(function), current_access_modifier);
-                generate_function(uclass, function, header_data, false, blacklisted_property_names);
+                generate_function(uclass, function, header_data, false, blacklisted_parameter_names);
                 implemented_functions.emplace(function->GetNamePrivate());
             }
         }
@@ -660,7 +660,7 @@ namespace RC::UEGenerator
                 if (!implemented_functions.contains(interface_function->GetNamePrivate()) && !should_skip)
                 {
                     append_access_modifier(header_data, get_function_access_modifier(interface_function), current_access_modifier);
-                    generate_function(uclass, interface_function, header_data, false, blacklisted_property_names, true);
+                    generate_function(uclass, interface_function, header_data, false, blacklisted_parameter_names, true);
                 }
             }
             // a bunch of non-reflected functions
@@ -1042,14 +1042,14 @@ namespace RC::UEGenerator
         // to determine the required overrides within the constructor.
         implementation_file.m_implementation_constructor.append(STR(") {"));
 
-        CaseInsensitiveSet blacklisted_property_names = collect_blacklisted_property_names(uclass);
+        CaseInsensitiveSet blacklisted_parameter_names = collect_blacklisted_parameter_names(uclass);
 
         // Generate functions
         for (UFunction* function : uclass->ForEachFunction())
         {
             if (!is_delegate_signature_function(function))
             {
-                generate_function_implementation(uclass, function, implementation_file, false, blacklisted_property_names);
+                generate_function_implementation(uclass, function, implementation_file, false, blacklisted_parameter_names);
                 implementation_file.append_line(STR(""));
             }
         }
@@ -1162,7 +1162,7 @@ namespace RC::UEGenerator
                                               UFunction* function,
                                               GeneratedSourceFile& header_data,
                                               bool is_generating_interface,
-                                              const CaseInsensitiveSet& blacklisted_property_names,
+                                              CaseInsensitiveSet const& blacklisted_parameter_names,
                                               bool generate_as_override) -> void
     {
         auto function_flags = function->GetFunctionFlags();
@@ -1216,7 +1216,7 @@ namespace RC::UEGenerator
             function_extra_postfix_string.append(fmt::format(STR(" PURE_VIRTUAL({},{})"), function->GetName(), return_statement_string));
         }
 
-        std::wstring function_argument_list = generate_function_parameter_list(uclass, function, header_data, false, context_name, blacklisted_property_names);
+        std::wstring function_argument_list = generate_function_parameter_list(uclass, function, header_data, false, context_name, blacklisted_parameter_names);
 
         const std::wstring function_flags_string = generate_function_flags(function, is_function_pure_virtual);
         header_data.append_line(fmt::format(STR("UFUNCTION({})"), function_flags_string));
@@ -1915,7 +1915,7 @@ namespace RC::UEGenerator
                                                              UFunction* function,
                                                              GeneratedSourceFile& implementation_file,
                                                              bool is_generating_interface,
-                                                             const CaseInsensitiveSet& blacklisted_property_names) -> void
+                                                             const CaseInsensitiveSet& blacklisted_parameter_names) -> void
     {
         const std::wstring class_native_name = get_native_class_name(uclass, is_generating_interface);
         const std::wstring raw_function_name = function->GetName();
@@ -1956,7 +1956,7 @@ namespace RC::UEGenerator
         if (!function_implementation_name.empty() || !net_validate_function_name.empty())
         {
             function_parameter_list =
-                    generate_function_parameter_list(uclass, function, implementation_file, false, context.context_name, blacklisted_property_names);
+                    generate_function_parameter_list(uclass, function, implementation_file, false, context.context_name, blacklisted_parameter_names);
         }
 
         if (!function_implementation_name.empty())
@@ -2167,33 +2167,26 @@ namespace RC::UEGenerator
         }
     }
 
-    auto UEHeaderGenerator::collect_blacklisted_property_names(UObject* uclass) -> CaseInsensitiveSet
+    auto UEHeaderGenerator::collect_blacklisted_parameter_names(UStruct* ustruct) -> CaseInsensitiveSet
     {
-        CaseInsensitiveSet result_set;
-
-        if (uclass->GetClassPrivate()->IsChildOf(UClass::StaticClass()))
+        std::unordered_set<FName> result_set;
+        for (; ustruct; ustruct = ustruct->GetSuperStruct())
         {
-            UClass* class_object = static_cast<UClass*>(uclass);
-
-            for (FProperty* property : class_object->ForEachProperty())
+            for (auto prop : ustruct->ForEachProperty())
             {
-                result_set.insert(property->GetName());
-            }
-
-            for (UFunction* function : class_object->ForEachFunction())
-            {
-                result_set.insert(function->GetName());
+                result_set.insert(prop->GetFName());
             }
         }
-        else if (uclass->GetClassPrivate()->IsChildOf(UScriptStruct::StaticClass()))
+        /*
+        Function parameters are allowed to conflict w/ method names
+        if (auto uclass = Cast<UClass>(ustruct))
         {
-            UScriptStruct* script_struct = static_cast<UScriptStruct*>(uclass);
-
-            for (FProperty* property : script_struct->ForEachProperty())
+            for (auto function : uclass->ForEachFunction())
             {
-                result_set.insert(property->GetName());
+                result_set.insert(function->GetNamePrivate());
             }
         }
+        */
         return result_set;
     }
 
@@ -3292,7 +3285,7 @@ namespace RC::UEGenerator
                                                              GeneratedSourceFile& header_data,
                                                              bool generate_comma_before_name,
                                                              std::wstring_view context_name,
-                                                             const CaseInsensitiveSet& blacklisted_property_names,
+                                                             const CaseInsensitiveSet& blacklisted_parameter_names,
                                                              int32_t* out_num_params) -> std::wstring
     {
         std::wstring function_arguments_string;
@@ -3342,17 +3335,18 @@ namespace RC::UEGenerator
                 }
                 param_declaration.append(STR(" "));
 
-                std::wstring property_name = property->GetName();
-                fix_cpp_keyword_name(property_name);
+                auto property_name = property->GetFName();
+                auto property_name_str = property_name.ToString();
+                fix_cpp_keyword_name(property_name_str);
 
                 // If property name is blacklisted, capitalize first letter and prepend New
-                if ((uclass && is_function_parameter_shadowing(uclass, property)) || blacklisted_property_names.contains(property_name))
+                if (blacklisted_parameter_names.contains(property_name))
                 {
-                    property_name[0] = towupper(property_name[0]);
-                    property_name.insert(0, STR("New"));
+                    property_name_str[0] = towupper(property_name_str[0]);
+                    property_name_str.insert(0, STR("New"));
                     Output::send<LogLevel::Warning>(STR("Renaming shadowed property {}\n"), property->GetFullName());
                 }
-                param_declaration.append(property_name);
+                param_declaration.append(property_name_str);
 
                 function_arguments_string.append(param_declaration);
                 function_arguments_string.append(STR(", "));
@@ -3560,21 +3554,6 @@ namespace RC::UEGenerator
             }
         }
         return blueprint_info;
-    }
-
-    auto UEHeaderGenerator::is_function_parameter_shadowing(UClass* uclass, FProperty* function_parameter) -> bool
-    {
-        bool is_shadowing = false;
-        for (FProperty* property : uclass->ForEachPropertyInChain())
-        {
-            if (property->GetFName().Equals(function_parameter->GetFName()))
-            {
-                is_shadowing = true;
-                break;
-            }
-        }
-
-        return is_shadowing;
     }
 
     auto UEHeaderGenerator::get_module_name_for_package(UObject* package) -> std::wstring

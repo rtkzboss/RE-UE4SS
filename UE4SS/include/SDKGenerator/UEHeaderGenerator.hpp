@@ -104,7 +104,7 @@ namespace RC::UEGenerator
         }
     };
 
-    using CaseInsensitiveSet = std::set<std::wstring, StringInsensitiveCompare>;
+    using CaseInsensitiveSet = std::unordered_set<FName>;
 
     class GeneratedFile
     {
@@ -291,7 +291,7 @@ namespace RC::UEGenerator
                                UFunction* function,
                                GeneratedSourceFile& header_data,
                                bool is_generating_interface,
-                               const CaseInsensitiveSet& blacklisted_property_names,
+                               CaseInsensitiveSet const& blacklisted_parameter_names,
                                bool generate_as_override = false) -> void;
 
         auto generate_property_assignment(UStruct* this_struct,
@@ -306,7 +306,7 @@ namespace RC::UEGenerator
                                               UFunction* function,
                                               GeneratedSourceFile& implementation_file,
                                               bool is_generating_interface,
-                                              const CaseInsensitiveSet& blacklisted_property_names) -> void;
+                                              CaseInsensitiveSet const& blacklisted_parameter_names) -> void;
 
         auto generate_interface_flags(UClass* uinterface) const -> std::wstring;
         auto generate_class_flags(UClass* uclass) const -> std::wstring;
@@ -321,7 +321,7 @@ namespace RC::UEGenerator
                                               GeneratedSourceFile& header_data,
                                               bool generate_comma_before_name,
                                               std::wstring_view context_name,
-                                              const CaseInsensitiveSet& blacklisted_property_names,
+                                              CaseInsensitiveSet const& blacklisted_parameter_names,
                                               int32_t* out_num_params = NULL) -> std::wstring;
         auto generate_default_property_value(FProperty* property, GeneratedSourceFile& header_data, std::wstring_view ContextName) -> std::wstring;
 
@@ -344,7 +344,7 @@ namespace RC::UEGenerator
       public:
         auto add_module_and_sub_module_dependencies(std::set<std::wstring>& out_module_dependencies, std::wstring const& module_name, bool add_self_module = true)
                 -> void;
-        auto static collect_blacklisted_property_names(UObject* property) -> CaseInsensitiveSet;
+        auto static collect_blacklisted_parameter_names(UStruct* property) -> CaseInsensitiveSet;
 
         auto static generate_object_pre_declaration(UObject* object) -> std::vector<std::vector<std::wstring>>;
 
@@ -355,8 +355,6 @@ namespace RC::UEGenerator
         auto static get_lowest_enum(UEnum* uenum) -> int64_t;
 
         auto static get_class_blueprint_info(UClass* function) -> ClassBlueprintInfo;
-        auto static is_struct_blueprint_type(UScriptStruct* property) -> bool;
-        auto static is_function_parameter_shadowing(UClass* property, FProperty* function_parameter) -> bool;
 
         auto static append_access_modifier(GeneratedSourceFile& header_data, AccessModifier needed_access, AccessModifier& current_access) -> void;
         auto static get_property_access_modifier(FProperty* property) -> AccessModifier;
