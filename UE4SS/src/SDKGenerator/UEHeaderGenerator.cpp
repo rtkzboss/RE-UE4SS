@@ -646,15 +646,6 @@ namespace RC::UEGenerator
             encountered_replicated_properties |= property->HasAnyPropertyFlags(CPF_Net);
             append_access_modifier(header_data, get_property_access_modifier(property), current_access_modifier);
             generate_property(uclass, property, header_data);
-
-            if (auto as_map_property = CastField<FMapProperty>(property))
-            {
-                if (auto as_struct_property = CastField<FStructProperty>(as_map_property->GetKeyProp()))
-                {
-                    // Add GetKeyProp() to vector for second pass.
-                    m_structs_that_need_get_type_hash.emplace(as_struct_property->GetStruct());
-                }
-            }
         }
 
         // Generate GetLifetimeReplicatedProps override if we have encountered replicated properties
@@ -771,15 +762,6 @@ namespace RC::UEGenerator
         {
             append_access_modifier(header_data, get_property_access_modifier(property), current_access_modifier);
             generate_property(script_struct, property, header_data);
-
-            if (auto as_map_property = CastField<FMapProperty>(property))
-            {
-                if (auto as_struct_property = CastField<FStructProperty>(as_map_property->GetKeyProp()))
-                {
-                    // Add GetKeyProp() to vector for second pass.
-                    m_structs_that_need_get_type_hash.emplace(as_struct_property->GetStruct());
-                }
-            }
         }
 
         // Generate constructor and make sure it's public
@@ -3979,11 +3961,11 @@ namespace RC::UEGenerator
         {
             for (auto prop : ustruct->ForEachProperty())
             {
-                preprocess_property(prop);
-                if (prop->HasAnyPropertyFlags(CPF_BlueprintVisible))
+                bool blueprint_visible = prop->HasAnyPropertyFlags(CPF_BlueprintVisible);
+                preprocess_property(prop, blueprint_visible);
+                if (blueprint_visible && uscriptstruct)
                 {
-                    if (uscriptstruct) m_blueprint_visible_structs.insert(uscriptstruct);
-                    preprocess_blueprint_visible_property(prop);
+                    m_blueprint_visible_structs.insert(uscriptstruct);
                 }
             }
             for (auto func : ustruct->ForEachFunction())
@@ -3996,14 +3978,11 @@ namespace RC::UEGenerator
     {
         for (auto prop : func->ForEachProperty())
         {
-            preprocess_property(prop);
-            if (func->HasAnyFunctionFlags(FUNC_BlueprintCallable))
-            {
-                preprocess_blueprint_visible_property(prop);
-            }
+            bool blueprint_visible = func->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+            preprocess_property(prop, blueprint_visible);
         }
     }
-    auto UEHeaderGenerator::preprocess_property(FProperty* property) -> void
+    auto UEHeaderGenerator::preprocess_property(FProperty* property, bool blueprint_visible) -> void
     {
         if (auto prop = CastField<FEnumProperty>(property))
         {
@@ -4017,39 +3996,36 @@ namespace RC::UEGenerator
                 Output::send<LogLevel::Error>(STR("Non-numeric underlying property for enum {}"), uenum->GetFullName());
             }
         }
-    }
-    auto UEHeaderGenerator::preprocess_blueprint_visible_property(FProperty* property) -> void
-    {
-        if (auto prop = CastField<FStructProperty>(property))
-        {
-            m_blueprint_visible_structs.insert(prop->GetStruct());
-        }
         if (auto prop = CastField<FNumericProperty>(property))
         {
             if (auto uenum = prop->GetIntPropertyEnum())
             {
-                this->m_blueprint_visible_enums.insert(uenum);
+                if (blueprint_visible) m_blueprint_visible_enums.insert(uenum);
             }
         }
-        if (auto prop = CastField<FEnumProperty>(property))
+        if (auto prop = CastField<FMapProperty>(property))
         {
-            if (auto uenum = prop->GetEnum())
+            if (auto key_prop = CastField<FStructProperty>(prop->GetKeyProp()))
             {
-                this->m_blueprint_visible_enums.insert(uenum);
+                m_structs_that_need_get_type_hash.emplace(key_prop->GetStruct());
             }
         }
         if (auto prop = CastField<FArrayProperty>(property))
         {
-            preprocess_blueprint_visible_property(prop->GetInner());
+            preprocess_property(prop->GetInner(), blueprint_visible);
         }
         if (auto prop = CastField<FSetProperty>(property))
         {
-            preprocess_blueprint_visible_property(prop->GetElementProp());
+            preprocess_property(prop->GetElementProp(), blueprint_visible);
         }
         if (auto prop = CastField<FMapProperty>(property))
         {
-            preprocess_blueprint_visible_property(prop->GetKeyProp());
-            preprocess_blueprint_visible_property(prop->GetValueProp());
+            preprocess_property(prop->GetKeyProp(), blueprint_visible);
+            preprocess_property(prop->GetValueProp(), blueprint_visible);
+        }
+        if (auto prop = CastField<FStructProperty>(property))
+        {
+            if (blueprint_visible) m_blueprint_visible_structs.insert(prop->GetStruct());
         }
     }
 

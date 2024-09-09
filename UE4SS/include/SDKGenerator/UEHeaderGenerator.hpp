@@ -279,8 +279,7 @@ namespace RC::UEGenerator
         auto preprocess_script_struct(UScriptStruct* ustruct) -> void;
         auto preprocess_struct(UStruct* ustruct) -> void;
         auto preprocess_function(UFunction* func) -> void;
-        auto preprocess_property(FProperty* prop) -> void;
-        auto preprocess_blueprint_visible_property(FProperty* prop) -> void;
+        auto preprocess_property(FProperty* prop, bool blueprint_visible) -> void;
         auto generate_object_description_file(UObject* object) -> bool;
         auto generate_module_build_file(std::wstring const& module_name) -> void;
         auto generate_module_implementation_file(std::wstring_view module_name) -> void;
