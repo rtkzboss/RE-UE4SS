@@ -344,7 +344,7 @@ namespace RC::UEGenerator
       public:
         auto add_module_and_sub_module_dependencies(std::set<std::wstring>& out_module_dependencies, std::wstring const& module_name, bool add_self_module = true)
                 -> void;
-        auto static collect_blacklisted_parameter_names(UStruct* property) -> CaseInsensitiveSet;
+        auto static collect_blacklisted_parameter_names(UStruct* property, bool skip_self) -> CaseInsensitiveSet;
 
         auto static generate_object_pre_declaration(UObject* object) -> std::vector<std::vector<std::wstring>>;
 

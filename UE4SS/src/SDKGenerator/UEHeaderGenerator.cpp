@@ -529,6 +529,11 @@ namespace RC::UEGenerator
     {
         return is_pure_virtual ? fmt::format(STR("PURE_VIRTUAL({}, {});"), name, ret_stmt) : fmt::format(STR("{{ {} }}"), ret_stmt);
     }
+    static auto needs_fobjectinitializer_constructor(UClass* uclass) -> bool
+    {
+        static UClass* UListViewBase_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.UListViewBase"));
+        return uclass->IsChildOf<AActor>() || uclass->IsChildOf<UActorComponent>() || uclass->IsChildOf(UListViewBase_StaticClass);
+    }
     auto UEHeaderGenerator::generate_object_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
         const std::wstring class_native_name = get_native_class_name(uclass);
@@ -579,7 +584,7 @@ namespace RC::UEGenerator
         AccessModifier current_access_modifier = AccessModifier::None;
         append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
 
-        CaseInsensitiveSet blacklisted_parameter_names = collect_blacklisted_parameter_names(uclass);
+        CaseInsensitiveSet blacklisted_parameter_names = collect_blacklisted_parameter_names(uclass, true);
         bool encountered_replicated_properties = false;
 
         // Generate delegate type declarations for the current class
@@ -597,10 +602,29 @@ namespace RC::UEGenerator
             header_data.append_line(STR(""));
         }
 
+        // Generate constructor
+        append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
+        StringType constructor_args = needs_fobjectinitializer_constructor(uclass) ? STR("const FObjectInitializer& ObjectInitializer") : STR("");
+        header_data.append_line(fmt::format(STR("{}({});"), class_native_name, constructor_args));
+        header_data.append_line_no_indent(STR(""));
+
+        // Generate functions
+        // we must do this *before* properties b/c UHT will only let properties shadow function parameters, not vice versa
+        std::unordered_set<FName> implemented_functions;
+        for (UFunction* function : uclass->ForEachFunction())
+        {
+            if (!is_delegate_signature_function(function))
+            {
+                append_access_modifier(header_data, get_function_access_modifier(function), current_access_modifier);
+                generate_function(uclass, function, header_data, false, blacklisted_parameter_names);
+                implemented_functions.emplace(function->GetNamePrivate());
+            }
+        }
+
         // Generate properties
         for (FProperty* property : uclass->ForEachProperty())
         {
-            encountered_replicated_properties |= (property->GetPropertyFlags() & CPF_Net) != 0;
+            encountered_replicated_properties |= property->HasAnyPropertyFlags(CPF_Net);
             append_access_modifier(header_data, get_property_access_modifier(property), current_access_modifier);
             generate_property(uclass, property, header_data);
 
@@ -614,35 +638,12 @@ namespace RC::UEGenerator
             }
         }
 
-        // Make sure constructor and replicated properties methods are public
-        append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
-
-        // Generate constructor
-        std::wstring constructor_string;
-        if (uclass->IsChildOf<AActor>() || uclass->IsChildOf<UActorComponent>())
-        {
-            constructor_string.append(STR("const FObjectInitializer& ObjectInitializer"));
-        }
-        header_data.append_line(fmt::format(STR("{}({});"), class_native_name, constructor_string));
-        header_data.append_line_no_indent(STR(""));
-
         // Generate GetLifetimeReplicatedProps override if we have encountered replicated properties
         if (encountered_replicated_properties)
         {
+            append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
             header_data.append_line(STR("virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;"));
             header_data.append_line_no_indent(STR(""));
-        }
-
-        // Generate functions
-        std::unordered_set<FName> implemented_functions;
-        for (UFunction* function : uclass->ForEachFunction())
-        {
-            if (!is_delegate_signature_function(function))
-            {
-                append_access_modifier(header_data, get_function_access_modifier(function), current_access_modifier);
-                generate_function(uclass, function, header_data, false, blacklisted_parameter_names);
-                implemented_functions.emplace(function->GetNamePrivate());
-            }
         }
 
         // Generate overrides for all inherited virtual functions
@@ -1042,7 +1043,7 @@ namespace RC::UEGenerator
         // to determine the required overrides within the constructor.
         implementation_file.m_implementation_constructor.append(STR(") {"));
 
-        CaseInsensitiveSet blacklisted_parameter_names = collect_blacklisted_parameter_names(uclass);
+        CaseInsensitiveSet blacklisted_parameter_names{};
 
         // Generate functions
         for (UFunction* function : uclass->ForEachFunction())
@@ -2167,9 +2168,10 @@ namespace RC::UEGenerator
         }
     }
 
-    auto UEHeaderGenerator::collect_blacklisted_parameter_names(UStruct* ustruct) -> CaseInsensitiveSet
+    auto UEHeaderGenerator::collect_blacklisted_parameter_names(UStruct* ustruct, bool skip_self) -> CaseInsensitiveSet
     {
         std::unordered_set<FName> result_set;
+        if (skip_self) ustruct = ustruct->GetSuperStruct();
         for (; ustruct; ustruct = ustruct->GetSuperStruct())
         {
             for (auto prop : ustruct->ForEachProperty())
