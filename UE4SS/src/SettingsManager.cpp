@@ -78,6 +78,15 @@ namespace RC
         REGISTER_BOOL_SETTING(UHTHeaderGenerator.MakeAllTypesBlueprintable, section_uht_header_generator, MakeAllTypesBlueprintable)
         REGISTER_BOOL_SETTING(UHTHeaderGenerator.MakeEnumClassesBlueprintType, section_uht_header_generator, MakeEnumClassesBlueprintType)
         REGISTER_BOOL_SETTING(UHTHeaderGenerator.MakeAllConfigsEngineConfig, section_uht_header_generator, MakeAllConfigsEngineConfig)
+           
+        constexpr static File::CharType section_uht_header_bind_widget[] = STR("UHTHeaderGenerator BindWidget");
+        parser.get_list(section_uht_header_bind_widget).for_each([&](size_t index, StringViewType line) {
+            auto i = line.find(STR(":"));
+            if (i == StringType::npos) return;
+            auto object_path = line.substr(0, i);
+            auto name = line.substr(i + 1);
+            UHTHeaderGenerator.BindWidget.emplace_back(object_path, name);
+        });
 
         constexpr static File::CharType section_debug[] = STR("Debug");
         REGISTER_BOOL_SETTING(Debug.SimpleConsoleEnabled, section_debug, ConsoleEnabled)

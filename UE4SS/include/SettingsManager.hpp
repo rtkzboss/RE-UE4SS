@@ -6,6 +6,7 @@
 #include <Common.hpp>
 #include <File/File.hpp>
 #include <GUI/GUI.hpp>
+#include <IniParser/Ini.hpp>
 
 namespace RC
 {
@@ -54,6 +55,7 @@ namespace RC
             bool MakeAllTypesBlueprintable{};
             bool MakeEnumClassesBlueprintType{};
             bool MakeAllConfigsEngineConfig{};
+            std::vector<std::pair<StringType, StringType>> BindWidget{};
         } UHTHeaderGenerator;
 
         struct SectionDebug

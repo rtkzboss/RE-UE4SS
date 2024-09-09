@@ -240,6 +240,8 @@ namespace RC::UEGenerator
 
         std::vector<GeneratedSourceFile> m_header_files;
         std::unordered_set<UStruct*> m_structs_that_need_get_type_hash;
+        std::unordered_set<UStruct*> m_bind_widget_wildcard;
+        std::unordered_map<UStruct*, std::unordered_set<FName>> m_bind_widget;
 
         // Storage to ensure that we don't have duplicate file names
         static std::map<File::StringType, UniqueName> m_used_file_names;
@@ -275,6 +277,7 @@ namespace RC::UEGenerator
 
       private:
         auto is_struct_blueprint_visible(UScriptStruct* ustruct) const -> bool;
+        auto should_bind_widget(UStruct* ustruct, FName property_name) const -> bool;
 
         auto generate_interface_definition(UClass* function, GeneratedSourceFile& header_data) -> void;
         auto generate_object_definition(UClass* interface_function, GeneratedSourceFile& header_data) -> void;
@@ -285,7 +288,7 @@ namespace RC::UEGenerator
         auto generate_object_implementation(UClass* property, GeneratedSourceFile& implementation_file) -> void;
         auto generate_struct_implementation(UScriptStruct* property, GeneratedSourceFile& implementation_file) -> void;
 
-        auto generate_property(UObject* uclass, FProperty* property, GeneratedSourceFile& header_data) -> void;
+        auto generate_property(UStruct* ustruct, FProperty* property, GeneratedSourceFile& header_data) -> void;
         auto generate_function(UClass* uclass,
                                UFunction* function,
                                GeneratedSourceFile& header_data,
@@ -312,7 +315,7 @@ namespace RC::UEGenerator
         auto generate_struct_flags(UScriptStruct* script_struct) const -> std::wstring;
         auto generate_enum_flags(UEnum* uenum) const -> std::wstring;
         auto generate_property_type_declaration(FProperty* property, const PropertyTypeDeclarationContext& context) -> std::wstring;
-        auto generate_property_flags(FProperty* property) const -> std::wstring;
+        auto generate_property_flags(UStruct* ustruct, FProperty* property) const -> std::wstring;
         auto generate_function_argument_flags(FProperty* property) const -> std::wstring;
         auto generate_function_flags(UFunction* function, bool is_function_pure_virtual = false) const -> std::wstring;
         auto generate_function_parameter_list(UClass* property,

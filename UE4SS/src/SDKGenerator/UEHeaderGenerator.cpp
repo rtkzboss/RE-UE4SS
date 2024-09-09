@@ -453,6 +453,13 @@ namespace RC::UEGenerator
         }
         return false;
     }
+    auto UEHeaderGenerator::should_bind_widget(UStruct* ustruct, FName property_name) const -> bool
+    {
+        if (m_bind_widget_wildcard.contains(ustruct)) return true;
+        auto it = m_bind_widget.find(ustruct);
+        if (it == m_bind_widget.end()) return false;
+        return it->second.contains(property_name);
+    }
 
     auto UEHeaderGenerator::generate_interface_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
@@ -533,13 +540,14 @@ namespace RC::UEGenerator
     }
     static auto needs_fobjectinitializer_constructor(UClass* uclass) -> bool
     {
+        static UClass* UUserWidget_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.UserWidget"));
         static std::unordered_set<UClass*> classes = {
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.AITask")),
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/OnlineSubsystemUtils.IpNetDriver")),
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AnimationBudgetAllocator.SkeletalMeshComponentBudgeted")),
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.SoundWaveProcedural")),
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/MovieScene.MovieSceneTrack")),
-                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.UserWidget")),
+                UUserWidget_StaticClass,
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.DynamicEntryBoxBase")),
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.ListView")),
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.ListViewBase")),
@@ -1134,12 +1142,12 @@ namespace RC::UEGenerator
         implementation_file.append_line(STR("}"));
     }
 
-    auto UEHeaderGenerator::generate_property(UObject* uclass, FProperty* property, GeneratedSourceFile& header_data) -> void
+    auto UEHeaderGenerator::generate_property(UStruct* ustruct, FProperty* property, GeneratedSourceFile& header_data) -> void
     {
-        auto property_flags = generate_property_flags(property);
+        auto property_flags = generate_property_flags(ustruct, property);
 
         bool is_bitmask_bool = false;
-        PropertyTypeDeclarationContext Context(uclass->GetName(), &header_data, true, &is_bitmask_bool);
+        PropertyTypeDeclarationContext Context(ustruct->GetName(), &header_data, true, &is_bitmask_bool);
 
         std::wstring property_decl{};
         std::wstring error_string{};
@@ -2834,7 +2842,7 @@ namespace RC::UEGenerator
         return flag_format_helper.build_flag_string();
     }
 
-    auto UEHeaderGenerator::generate_property_flags(FProperty* property) const -> std::wstring
+    auto UEHeaderGenerator::generate_property_flags(UStruct* ustruct, FProperty* property) const -> std::wstring
     {
         FlagFormatHelper flag_format_helper{};
         auto property_flags = property->GetPropertyFlags();
@@ -3002,6 +3010,15 @@ namespace RC::UEGenerator
         if ((property_flags & CPF_SkipSerialization) != 0)
         {
             flag_format_helper.add_switch(STR("SkipSerialization"));
+        }
+
+        if (auto prop = CastField<FObjectProperty>(property))
+        {
+            static UClass* UWidget_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.Widget"));
+            if (prop->GetPropertyClass()->IsChildOf(UWidget_StaticClass) && should_bind_widget(ustruct, prop->GetFName()))
+            {
+                flag_format_helper.get_meta()->add_switch(STR("BindWidget"));
+            }
         }
 
         // Need to have all of these flags, otherwise we might accidentally get Instanced of delegate properties; CPF_ExportObject is not set for delegate properties
@@ -3579,14 +3596,32 @@ namespace RC::UEGenerator
 
     UEHeaderGenerator::UEHeaderGenerator(const FFilePath& root_directory)
     {
-        this->m_root_directory = root_directory;
-        this->m_primary_module_name = determine_primary_game_module_name();
+        m_root_directory = root_directory;
+        m_primary_module_name = determine_primary_game_module_name();
 
         // Force inclusion of Core and CoreUObject into all the generated module build files
-        this->m_forced_module_dependencies.insert(STR("Core"));
-        this->m_forced_module_dependencies.insert(STR("CoreUObject"));
+        m_forced_module_dependencies.insert(STR("Core"));
+        m_forced_module_dependencies.insert(STR("CoreUObject"));
         // TODO not optimal, but still needed for the majority of the cases
-        this->m_forced_module_dependencies.insert(STR("Engine"));
+        m_forced_module_dependencies.insert(STR("Engine"));
+
+        for (auto const& [object_path, name] : UE4SSProgram::settings_manager.UHTHeaderGenerator.BindWidget)
+        {
+            auto object = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, object_path);
+            if (!object)
+            {
+                Output::send<LogLevel::Error>(STR("Cannot find BindWidget object {}"), object_path);
+                return;
+            }
+            if (name == STR("*"))
+            {
+                m_bind_widget_wildcard.insert(object);
+            }
+            else
+            {
+                m_bind_widget[object].insert(FName(name, FNAME_Add));
+            }
+        }
     }
 
     auto UEHeaderGenerator::ignore_selected_modules() -> void
@@ -3598,144 +3633,144 @@ namespace RC::UEGenerator
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreEngineAndCoreUObject ||
             UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreAllCoreEngineModules)
         {
-            this->m_ignored_module_names.insert(STR("Engine"));
-            this->m_ignored_module_names.insert(STR("CoreUObject"));
+            m_ignored_module_names.insert(STR("Engine"));
+            m_ignored_module_names.insert(STR("CoreUObject"));
         }
 
         // Skip all core engine packages if requested
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreAllCoreEngineModules)
         {
-            this->m_ignored_module_names.insert(STR("ActorLayerUtilities"));
-            this->m_ignored_module_names.insert(STR("ActorSequence"));
-            this->m_ignored_module_names.insert(STR("AIModule"));
-            this->m_ignored_module_names.insert(STR("AndroidPermission"));
-            this->m_ignored_module_names.insert(STR("AnimationCore"));
-            this->m_ignored_module_names.insert(STR("AnimationSharing"));
-            this->m_ignored_module_names.insert(STR("AnimGraphRuntime"));
-            this->m_ignored_module_names.insert(STR("AppleImageUtils"));
-            this->m_ignored_module_names.insert(STR("ArchVisCharacter"));
-            this->m_ignored_module_names.insert(STR("AssetRegistry"));
-            this->m_ignored_module_names.insert(STR("AssetTags"));
-            this->m_ignored_module_names.insert(STR("AudioAnalyzer"));
-            this->m_ignored_module_names.insert(STR("AudioCapture"));
-            this->m_ignored_module_names.insert(STR("AudioExtensions"));
-            this->m_ignored_module_names.insert(STR("AudioMixer"));
-            this->m_ignored_module_names.insert(STR("AudioPlatformConfiguration"));
-            this->m_ignored_module_names.insert(STR("AudioSynesthesia"));
-            this->m_ignored_module_names.insert(STR("AugmentedReality"));
-            this->m_ignored_module_names.insert(STR("AutomationUtils"));
-            this->m_ignored_module_names.insert(STR("AvfMediaFactory"));
-            this->m_ignored_module_names.insert(STR("BuildPatchServices"));
-            this->m_ignored_module_names.insert(STR("CableComponent"));
-            this->m_ignored_module_names.insert(STR("Chaos"));
-            this->m_ignored_module_names.insert(STR("ChaosCloth"));
-            this->m_ignored_module_names.insert(STR("ChaosNiagara"));
-            this->m_ignored_module_names.insert(STR("ChaosSolvers"));
-            this->m_ignored_module_names.insert(STR("ChaosSolverEngine"));
-            this->m_ignored_module_names.insert(STR("CinematicCamera"));
-            this->m_ignored_module_names.insert(STR("ClothingSystemRuntimeCommon"));
-            this->m_ignored_module_names.insert(STR("ClothingSystemRuntimeInterface"));
-            this->m_ignored_module_names.insert(STR("ClothingSystemRuntimeNv"));
-            this->m_ignored_module_names.insert(STR("CustomMeshComponent"));
-            this->m_ignored_module_names.insert(STR("DatasmithContent"));
-            this->m_ignored_module_names.insert(STR("DeveloperSettings"));
-            this->m_ignored_module_names.insert(STR("EditableMesh"));
-            this->m_ignored_module_names.insert(STR("EngineMessages"));
-            this->m_ignored_module_names.insert(STR("EngineSettings"));
-            this->m_ignored_module_names.insert(STR("EyeTracker"));
-            this->m_ignored_module_names.insert(STR("FacialAnimation"));
-            this->m_ignored_module_names.insert(STR("FieldSystemCore"));
-            this->m_ignored_module_names.insert(STR("FieldSystemEngine"));
-            this->m_ignored_module_names.insert(STR("Foliage"));
-            this->m_ignored_module_names.insert(STR("GameplayTags"));
-            this->m_ignored_module_names.insert(STR("GameplayTasks"));
-            this->m_ignored_module_names.insert(STR("GeometryCache"));
-            this->m_ignored_module_names.insert(STR("GeometryCacheTracks"));
-            this->m_ignored_module_names.insert(STR("GeometryCollectionCore"));
-            this->m_ignored_module_names.insert(STR("GeometryCollectionSimulationCore"));
-            this->m_ignored_module_names.insert(STR("GeometryCollectionEngine"));
-            this->m_ignored_module_names.insert(STR("GeometryCollectionTracks"));
-            this->m_ignored_module_names.insert(STR("GooglePAD"));
-            this->m_ignored_module_names.insert(STR("HeadMountedDisplay"));
-            this->m_ignored_module_names.insert(STR("ImageWrapper"));
-            this->m_ignored_module_names.insert(STR("ImageWriteQueue"));
-            this->m_ignored_module_names.insert(STR("ImgMedia"));
-            this->m_ignored_module_names.insert(STR("ImgMediaFactory"));
-            this->m_ignored_module_names.insert(STR("InputCore"));
-            this->m_ignored_module_names.insert(STR("InteractiveToolsFramework"));
-            this->m_ignored_module_names.insert(STR("JsonUtilities"));
-            this->m_ignored_module_names.insert(STR("Landscape"));
-            this->m_ignored_module_names.insert(STR("LevelSequence"));
-            this->m_ignored_module_names.insert(STR("LightPropagationVolumeRuntime"));
-            this->m_ignored_module_names.insert(STR("LiveLinkInterface"));
-            this->m_ignored_module_names.insert(STR("LocationServicesBPLibrary"));
-            this->m_ignored_module_names.insert(STR("LuminRuntimeSettings"));
-            this->m_ignored_module_names.insert(STR("MagicLeap"));
-            this->m_ignored_module_names.insert(STR("MagicLeapAR"));
-            this->m_ignored_module_names.insert(STR("MagicLeapARPin"));
-            this->m_ignored_module_names.insert(STR("MagicLeapAudio"));
-            this->m_ignored_module_names.insert(STR("MagicLeapController"));
-            this->m_ignored_module_names.insert(STR("MagicLeapEyeTracker"));
-            this->m_ignored_module_names.insert(STR("MagicLeapHandMeshing"));
-            this->m_ignored_module_names.insert(STR("MagicLeapHandTracking"));
-            this->m_ignored_module_names.insert(STR("MagicLeapIdentity"));
-            this->m_ignored_module_names.insert(STR("MagicLeapImageTracker"));
-            this->m_ignored_module_names.insert(STR("MagicLeapLightEstimation"));
-            this->m_ignored_module_names.insert(STR("MagicLeapPlanes"));
-            this->m_ignored_module_names.insert(STR("MagicLeapPrivileges"));
-            this->m_ignored_module_names.insert(STR("MagicLeapSecureStorage"));
-            this->m_ignored_module_names.insert(STR("MagicLeapSharedWorld"));
-            this->m_ignored_module_names.insert(STR("MaterialShaderQualitySettings"));
-            this->m_ignored_module_names.insert(STR("MediaAssets"));
-            this->m_ignored_module_names.insert(STR("MediaCompositing"));
-            this->m_ignored_module_names.insert(STR("MediaUtils"));
-            this->m_ignored_module_names.insert(STR("MeshDescription"));
-            this->m_ignored_module_names.insert(STR("MobilePatchingUtils"));
-            this->m_ignored_module_names.insert(STR("MotoSynth"));
-            this->m_ignored_module_names.insert(STR("MoviePlayer"));
-            this->m_ignored_module_names.insert(STR("MovieScene"));
-            this->m_ignored_module_names.insert(STR("MovieSceneCapture"));
-            this->m_ignored_module_names.insert(STR("MovieSceneTracks"));
-            this->m_ignored_module_names.insert(STR("MRMesh"));
-            this->m_ignored_module_names.insert(STR("NavigationSystem"));
-            this->m_ignored_module_names.insert(STR("NetCore"));
-            this->m_ignored_module_names.insert(STR("Niagara"));
-            this->m_ignored_module_names.insert(STR("NiagaraAnimNotifies"));
-            this->m_ignored_module_names.insert(STR("NiagaraCore"));
-            this->m_ignored_module_names.insert(STR("NiagaraShader"));
-            this->m_ignored_module_names.insert(STR("OculusHMD"));
-            this->m_ignored_module_names.insert(STR("OculusInput"));
-            this->m_ignored_module_names.insert(STR("OculusMR"));
-            this->m_ignored_module_names.insert(STR("OnlineSubsystem"));
-            this->m_ignored_module_names.insert(STR("OnlineSubsystemUtils"));
-            this->m_ignored_module_names.insert(STR("Overlay"));
-            this->m_ignored_module_names.insert(STR("PacketHandler"));
-            this->m_ignored_module_names.insert(STR("Paper2D"));
-            this->m_ignored_module_names.insert(STR("PhysicsCore"));
-            this->m_ignored_module_names.insert(STR("PhysXVehicles"));
-            this->m_ignored_module_names.insert(STR("ProceduralMeshComponent"));
-            this->m_ignored_module_names.insert(STR("PropertyAccess"));
-            this->m_ignored_module_names.insert(STR("PropertyPath"));
-            this->m_ignored_module_names.insert(STR("Renderer"));
-            this->m_ignored_module_names.insert(STR("Serialization"));
-            this->m_ignored_module_names.insert(STR("SessionMessages"));
-            this->m_ignored_module_names.insert(STR("SignificanceManager"));
-            this->m_ignored_module_names.insert(STR("Slate"));
-            this->m_ignored_module_names.insert(STR("SlateCore"));
-            this->m_ignored_module_names.insert(STR("SoundFields"));
-            this->m_ignored_module_names.insert(STR("StaticMeshDescription"));
-            this->m_ignored_module_names.insert(STR("SteamVR"));
-            this->m_ignored_module_names.insert(STR("SteamVRInputDevice"));
-            this->m_ignored_module_names.insert(STR("Synthesis"));
-            this->m_ignored_module_names.insert(STR("TcpMessaging"));
-            this->m_ignored_module_names.insert(STR("TemplateSequence"));
-            this->m_ignored_module_names.insert(STR("TimeManagement"));
-            this->m_ignored_module_names.insert(STR("UdpMessaging"));
-            this->m_ignored_module_names.insert(STR("UMG"));
-            this->m_ignored_module_names.insert(STR("UObjectPlugin"));
-            this->m_ignored_module_names.insert(STR("VariantManagerContent"));
-            this->m_ignored_module_names.insert(STR("VectorVM"));
-            this->m_ignored_module_names.insert(STR("WmfMediaFactory"));
+            m_ignored_module_names.insert(STR("ActorLayerUtilities"));
+            m_ignored_module_names.insert(STR("ActorSequence"));
+            m_ignored_module_names.insert(STR("AIModule"));
+            m_ignored_module_names.insert(STR("AndroidPermission"));
+            m_ignored_module_names.insert(STR("AnimationCore"));
+            m_ignored_module_names.insert(STR("AnimationSharing"));
+            m_ignored_module_names.insert(STR("AnimGraphRuntime"));
+            m_ignored_module_names.insert(STR("AppleImageUtils"));
+            m_ignored_module_names.insert(STR("ArchVisCharacter"));
+            m_ignored_module_names.insert(STR("AssetRegistry"));
+            m_ignored_module_names.insert(STR("AssetTags"));
+            m_ignored_module_names.insert(STR("AudioAnalyzer"));
+            m_ignored_module_names.insert(STR("AudioCapture"));
+            m_ignored_module_names.insert(STR("AudioExtensions"));
+            m_ignored_module_names.insert(STR("AudioMixer"));
+            m_ignored_module_names.insert(STR("AudioPlatformConfiguration"));
+            m_ignored_module_names.insert(STR("AudioSynesthesia"));
+            m_ignored_module_names.insert(STR("AugmentedReality"));
+            m_ignored_module_names.insert(STR("AutomationUtils"));
+            m_ignored_module_names.insert(STR("AvfMediaFactory"));
+            m_ignored_module_names.insert(STR("BuildPatchServices"));
+            m_ignored_module_names.insert(STR("CableComponent"));
+            m_ignored_module_names.insert(STR("Chaos"));
+            m_ignored_module_names.insert(STR("ChaosCloth"));
+            m_ignored_module_names.insert(STR("ChaosNiagara"));
+            m_ignored_module_names.insert(STR("ChaosSolvers"));
+            m_ignored_module_names.insert(STR("ChaosSolverEngine"));
+            m_ignored_module_names.insert(STR("CinematicCamera"));
+            m_ignored_module_names.insert(STR("ClothingSystemRuntimeCommon"));
+            m_ignored_module_names.insert(STR("ClothingSystemRuntimeInterface"));
+            m_ignored_module_names.insert(STR("ClothingSystemRuntimeNv"));
+            m_ignored_module_names.insert(STR("CustomMeshComponent"));
+            m_ignored_module_names.insert(STR("DatasmithContent"));
+            m_ignored_module_names.insert(STR("DeveloperSettings"));
+            m_ignored_module_names.insert(STR("EditableMesh"));
+            m_ignored_module_names.insert(STR("EngineMessages"));
+            m_ignored_module_names.insert(STR("EngineSettings"));
+            m_ignored_module_names.insert(STR("EyeTracker"));
+            m_ignored_module_names.insert(STR("FacialAnimation"));
+            m_ignored_module_names.insert(STR("FieldSystemCore"));
+            m_ignored_module_names.insert(STR("FieldSystemEngine"));
+            m_ignored_module_names.insert(STR("Foliage"));
+            m_ignored_module_names.insert(STR("GameplayTags"));
+            m_ignored_module_names.insert(STR("GameplayTasks"));
+            m_ignored_module_names.insert(STR("GeometryCache"));
+            m_ignored_module_names.insert(STR("GeometryCacheTracks"));
+            m_ignored_module_names.insert(STR("GeometryCollectionCore"));
+            m_ignored_module_names.insert(STR("GeometryCollectionSimulationCore"));
+            m_ignored_module_names.insert(STR("GeometryCollectionEngine"));
+            m_ignored_module_names.insert(STR("GeometryCollectionTracks"));
+            m_ignored_module_names.insert(STR("GooglePAD"));
+            m_ignored_module_names.insert(STR("HeadMountedDisplay"));
+            m_ignored_module_names.insert(STR("ImageWrapper"));
+            m_ignored_module_names.insert(STR("ImageWriteQueue"));
+            m_ignored_module_names.insert(STR("ImgMedia"));
+            m_ignored_module_names.insert(STR("ImgMediaFactory"));
+            m_ignored_module_names.insert(STR("InputCore"));
+            m_ignored_module_names.insert(STR("InteractiveToolsFramework"));
+            m_ignored_module_names.insert(STR("JsonUtilities"));
+            m_ignored_module_names.insert(STR("Landscape"));
+            m_ignored_module_names.insert(STR("LevelSequence"));
+            m_ignored_module_names.insert(STR("LightPropagationVolumeRuntime"));
+            m_ignored_module_names.insert(STR("LiveLinkInterface"));
+            m_ignored_module_names.insert(STR("LocationServicesBPLibrary"));
+            m_ignored_module_names.insert(STR("LuminRuntimeSettings"));
+            m_ignored_module_names.insert(STR("MagicLeap"));
+            m_ignored_module_names.insert(STR("MagicLeapAR"));
+            m_ignored_module_names.insert(STR("MagicLeapARPin"));
+            m_ignored_module_names.insert(STR("MagicLeapAudio"));
+            m_ignored_module_names.insert(STR("MagicLeapController"));
+            m_ignored_module_names.insert(STR("MagicLeapEyeTracker"));
+            m_ignored_module_names.insert(STR("MagicLeapHandMeshing"));
+            m_ignored_module_names.insert(STR("MagicLeapHandTracking"));
+            m_ignored_module_names.insert(STR("MagicLeapIdentity"));
+            m_ignored_module_names.insert(STR("MagicLeapImageTracker"));
+            m_ignored_module_names.insert(STR("MagicLeapLightEstimation"));
+            m_ignored_module_names.insert(STR("MagicLeapPlanes"));
+            m_ignored_module_names.insert(STR("MagicLeapPrivileges"));
+            m_ignored_module_names.insert(STR("MagicLeapSecureStorage"));
+            m_ignored_module_names.insert(STR("MagicLeapSharedWorld"));
+            m_ignored_module_names.insert(STR("MaterialShaderQualitySettings"));
+            m_ignored_module_names.insert(STR("MediaAssets"));
+            m_ignored_module_names.insert(STR("MediaCompositing"));
+            m_ignored_module_names.insert(STR("MediaUtils"));
+            m_ignored_module_names.insert(STR("MeshDescription"));
+            m_ignored_module_names.insert(STR("MobilePatchingUtils"));
+            m_ignored_module_names.insert(STR("MotoSynth"));
+            m_ignored_module_names.insert(STR("MoviePlayer"));
+            m_ignored_module_names.insert(STR("MovieScene"));
+            m_ignored_module_names.insert(STR("MovieSceneCapture"));
+            m_ignored_module_names.insert(STR("MovieSceneTracks"));
+            m_ignored_module_names.insert(STR("MRMesh"));
+            m_ignored_module_names.insert(STR("NavigationSystem"));
+            m_ignored_module_names.insert(STR("NetCore"));
+            m_ignored_module_names.insert(STR("Niagara"));
+            m_ignored_module_names.insert(STR("NiagaraAnimNotifies"));
+            m_ignored_module_names.insert(STR("NiagaraCore"));
+            m_ignored_module_names.insert(STR("NiagaraShader"));
+            m_ignored_module_names.insert(STR("OculusHMD"));
+            m_ignored_module_names.insert(STR("OculusInput"));
+            m_ignored_module_names.insert(STR("OculusMR"));
+            m_ignored_module_names.insert(STR("OnlineSubsystem"));
+            m_ignored_module_names.insert(STR("OnlineSubsystemUtils"));
+            m_ignored_module_names.insert(STR("Overlay"));
+            m_ignored_module_names.insert(STR("PacketHandler"));
+            m_ignored_module_names.insert(STR("Paper2D"));
+            m_ignored_module_names.insert(STR("PhysicsCore"));
+            m_ignored_module_names.insert(STR("PhysXVehicles"));
+            m_ignored_module_names.insert(STR("ProceduralMeshComponent"));
+            m_ignored_module_names.insert(STR("PropertyAccess"));
+            m_ignored_module_names.insert(STR("PropertyPath"));
+            m_ignored_module_names.insert(STR("Renderer"));
+            m_ignored_module_names.insert(STR("Serialization"));
+            m_ignored_module_names.insert(STR("SessionMessages"));
+            m_ignored_module_names.insert(STR("SignificanceManager"));
+            m_ignored_module_names.insert(STR("Slate"));
+            m_ignored_module_names.insert(STR("SlateCore"));
+            m_ignored_module_names.insert(STR("SoundFields"));
+            m_ignored_module_names.insert(STR("StaticMeshDescription"));
+            m_ignored_module_names.insert(STR("SteamVR"));
+            m_ignored_module_names.insert(STR("SteamVRInputDevice"));
+            m_ignored_module_names.insert(STR("Synthesis"));
+            m_ignored_module_names.insert(STR("TcpMessaging"));
+            m_ignored_module_names.insert(STR("TemplateSequence"));
+            m_ignored_module_names.insert(STR("TimeManagement"));
+            m_ignored_module_names.insert(STR("UdpMessaging"));
+            m_ignored_module_names.insert(STR("UMG"));
+            m_ignored_module_names.insert(STR("UObjectPlugin"));
+            m_ignored_module_names.insert(STR("VariantManagerContent"));
+            m_ignored_module_names.insert(STR("VectorVM"));
+            m_ignored_module_names.insert(STR("WmfMediaFactory"));
         }
     }
 
