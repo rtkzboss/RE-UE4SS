@@ -453,13 +453,6 @@ namespace RC::UEGenerator
         }
         return false;
     }
-    auto UEHeaderGenerator::should_bind_widget(UStruct* ustruct, FName property_name) const -> bool
-    {
-        if (m_bind_widget_wildcard.contains(ustruct)) return true;
-        auto it = m_bind_widget.find(ustruct);
-        if (it == m_bind_widget.end()) return false;
-        return it->second.contains(property_name);
-    }
 
     auto UEHeaderGenerator::generate_interface_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
@@ -1430,7 +1423,7 @@ namespace RC::UEGenerator
         static FName NAME_NativeClass{STR("NativeClass"), FNAME_Add};
         static FName NAME_hudClass{STR("hudClass"), FNAME_Add};
         FName property_name = property->GetFName();
-        if (property_name == NAME_NativeClass || property_name == NAME_hudClass) return;
+        if (property_name == NAME_NativeClass || property_name == NAME_hudClass || ignore_default.includes(property)) return;
 
         //Output::send<LogLevel::Verbose>(STR("assign {}\n"), property->GetFullName());
 
@@ -3015,7 +3008,7 @@ namespace RC::UEGenerator
         if (auto prop = CastField<FObjectProperty>(property))
         {
             static UClass* UWidget_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.Widget"));
-            if (prop->GetPropertyClass()->IsChildOf(UWidget_StaticClass) && should_bind_widget(ustruct, prop->GetFName()))
+            if (prop->GetPropertyClass()->IsChildOf(UWidget_StaticClass) && bind_widget.includes(prop))
             {
                 flag_format_helper.get_meta()->add_switch(STR("BindWidget"));
             }
@@ -3594,7 +3587,51 @@ namespace RC::UEGenerator
         return package_name;
     }
 
+    PropertyListView::PropertyListView(SettingsManager::PropertyList const& list)
+    {
+        for (auto item : list.each_item())
+        {
+            StringType path{item.object_path}; // unfortunate copy since StaticFindObject wants it to be NUL terminated
+            auto object = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, path);
+            if (!object)
+            {
+                Output::send<LogLevel::Error>(STR("Cannot find property owner {}\n"), item.object_path);
+                continue;
+            }
+            if (item.operation == SettingsManager::PropertyOp::Wildcard)
+            {
+                wildcard.insert(object);
+            }
+            else
+            {
+                FName name{item.property_name, FNAME_Add};
+                if (!object->FindProperty(name))
+                {
+                    Output::send<LogLevel::Error>(STR("Cannot find property {}.{}\n"), object->GetFullName(), item.property_name);
+                    continue;
+                }
+                ops[object].insert({name, item.operation});
+            }
+        }
+    }
+    auto PropertyListView::includes(FProperty* prop) const -> bool
+    {
+        auto owner = Cast<UStruct>(prop->GetOutermostOwner());
+        auto has_wildcard = wildcard.contains(owner);
+        auto it = ops.find(owner);
+        if (it != ops.end())
+        {
+            auto opit = it->second.find(prop->GetFName());
+            if (opit != it->second.end())
+            {
+                return opit->second != SettingsManager::PropertyOp::Exclude;
+            }
+        }
+        return has_wildcard;
+    }
+
     UEHeaderGenerator::UEHeaderGenerator(const FFilePath& root_directory)
+        : bind_widget(UE4SSProgram::settings_manager.UHTHeaderGenerator.BindWidget), ignore_default(UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreDefault)
     {
         m_root_directory = root_directory;
         m_primary_module_name = determine_primary_game_module_name();
@@ -3604,24 +3641,6 @@ namespace RC::UEGenerator
         m_forced_module_dependencies.insert(STR("CoreUObject"));
         // TODO not optimal, but still needed for the majority of the cases
         m_forced_module_dependencies.insert(STR("Engine"));
-
-        for (auto const& [object_path, name] : UE4SSProgram::settings_manager.UHTHeaderGenerator.BindWidget)
-        {
-            auto object = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, object_path);
-            if (!object)
-            {
-                Output::send<LogLevel::Error>(STR("Cannot find BindWidget object {}"), object_path);
-                return;
-            }
-            if (name == STR("*"))
-            {
-                m_bind_widget_wildcard.insert(object);
-            }
-            else
-            {
-                m_bind_widget[object].insert(FName(name, FNAME_Add));
-            }
-        }
     }
 
     auto UEHeaderGenerator::ignore_selected_modules() -> void

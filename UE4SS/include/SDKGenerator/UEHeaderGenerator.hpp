@@ -8,6 +8,7 @@
 
 #include <File/File.hpp>
 #include <SDKGenerator/Common.hpp>
+#include <SettingsManager.hpp>
 #include <Unreal/Property/FObjectProperty.hpp>
 #include <Unreal/Property/FSoftObjectProperty.hpp>
 #pragma warning(disable : 4005)
@@ -223,6 +224,17 @@ namespace RC::UEGenerator
         int32_t usable_id{HAS_NO_DUPLICATES};
     };
 
+    class PropertyListView
+    {
+        std::unordered_set<UStruct*> wildcard;
+        std::unordered_map<UStruct*, std::unordered_map<FName, SettingsManager::PropertyOp>> ops;
+
+      public:
+        PropertyListView(SettingsManager::PropertyList const& list);
+        // auto includes(UStruct* owner, FName property_name) -> bool;
+        auto includes(FProperty* prop) const -> bool;
+    };
+
     class UEHeaderGenerator
     {
       private:
@@ -237,11 +249,11 @@ namespace RC::UEGenerator
         std::set<UEnum*> m_blueprint_visible_enums;
         std::set<UScriptStruct*> m_blueprint_visible_structs;
         std::map<std::wstring, std::set<std::wstring>> m_module_dependencies;
+        PropertyListView bind_widget;
+        PropertyListView ignore_default;
 
         std::vector<GeneratedSourceFile> m_header_files;
         std::unordered_set<UStruct*> m_structs_that_need_get_type_hash;
-        std::unordered_set<UStruct*> m_bind_widget_wildcard;
-        std::unordered_map<UStruct*, std::unordered_set<FName>> m_bind_widget;
 
         // Storage to ensure that we don't have duplicate file names
         static std::map<File::StringType, UniqueName> m_used_file_names;
@@ -277,7 +289,6 @@ namespace RC::UEGenerator
 
       private:
         auto is_struct_blueprint_visible(UScriptStruct* ustruct) const -> bool;
-        auto should_bind_widget(UStruct* ustruct, FName property_name) const -> bool;
 
         auto generate_interface_definition(UClass* function, GeneratedSourceFile& header_data) -> void;
         auto generate_object_definition(UClass* interface_function, GeneratedSourceFile& header_data) -> void;

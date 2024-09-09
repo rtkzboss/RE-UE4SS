@@ -80,12 +80,12 @@ namespace RC
         REGISTER_BOOL_SETTING(UHTHeaderGenerator.MakeAllConfigsEngineConfig, section_uht_header_generator, MakeAllConfigsEngineConfig)
            
         constexpr static File::CharType section_uht_header_bind_widget[] = STR("UHTHeaderGenerator BindWidget");
-        parser.get_list(section_uht_header_bind_widget).for_each([&](size_t index, StringViewType line) {
-            auto i = line.find(STR(":"));
-            if (i == StringType::npos) return;
-            auto object_path = line.substr(0, i);
-            auto name = line.substr(i + 1);
-            UHTHeaderGenerator.BindWidget.emplace_back(object_path, name);
+        parser.get_list(section_uht_header_bind_widget).for_each([&](auto i, StringType& line) {
+            UHTHeaderGenerator.BindWidget.lines.emplace_back(std::move(line));
+        });
+        constexpr static File::CharType section_uht_header_ignore_default[] = STR("UHTHeaderGenerator IgnoreDefault");
+        parser.get_list(section_uht_header_ignore_default).for_each([&](auto i, StringType& line) {
+            UHTHeaderGenerator.IgnoreDefault.lines.emplace_back(std::move(line));
         });
 
         constexpr static File::CharType section_debug[] = STR("Debug");
@@ -128,5 +128,25 @@ namespace RC
 
         constexpr static File::CharType section_experimental_features[] = STR("ExperimentalFeatures");
         REGISTER_BOOL_SETTING(Experimental.GUIUFunctionCaller, section_experimental_features, GUIUFunctionCaller)
+    }
+
+    auto SettingsManager::PropertyList::each_item() const -> Generator<PropertyItem>
+    {
+        for (auto const& line : lines)
+        {
+            auto i = line.find(STR(":"));
+            if (i == StringType::npos)
+            {
+                co_yield PropertyItem{line};
+            }
+            else
+            {
+                auto key = StringViewType(line).substr(i + 1);
+                auto op = key == STR("*") ? PropertyOp::Wildcard :
+                    line[0] == '!' ? PropertyOp::Exclude : PropertyOp::Include;
+                auto object = StringViewType(line).substr(op == PropertyOp::Exclude ? 1 : 0, i);
+                co_yield PropertyItem{object, op, key};
+            }
+        }
     }
 } // namespace RC

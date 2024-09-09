@@ -7,6 +7,7 @@
 #include <File/File.hpp>
 #include <GUI/GUI.hpp>
 #include <IniParser/Ini.hpp>
+#include <Constructs/Generator.hpp>
 
 namespace RC
 {
@@ -46,6 +47,34 @@ namespace RC
             bool LoadAllAssetsBeforeGeneratingCXXHeaders{};
         } CXXHeaderGenerator;
 
+        enum class PropertyOp
+        {
+            Include,
+            Exclude,
+            Wildcard,
+        };
+        struct PropertyItem
+        {
+            StringViewType object_path;
+            PropertyOp operation;
+            StringViewType property_name;
+
+            PropertyItem()
+            {
+            }
+            PropertyItem(StringViewType object_path) : PropertyItem(object_path, PropertyOp::Wildcard, {})
+            {
+            }
+            PropertyItem(StringViewType object_path, PropertyOp operation, StringViewType property_name)
+                : object_path(object_path), operation(operation), property_name(property_name)
+            {
+            }
+        };
+        struct PropertyList
+        {
+            std::vector<StringType> lines;
+            auto each_item() const -> Generator<PropertyItem>;
+        };
         struct SectionUHTHeaderGenerator
         {
             bool IgnoreAllCoreEngineModules{};
@@ -55,7 +84,8 @@ namespace RC
             bool MakeAllTypesBlueprintable{};
             bool MakeEnumClassesBlueprintType{};
             bool MakeAllConfigsEngineConfig{};
-            std::vector<std::pair<StringType, StringType>> BindWidget{};
+            PropertyList BindWidget{};
+            PropertyList IgnoreDefault{};
         } UHTHeaderGenerator;
 
         struct SectionDebug
