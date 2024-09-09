@@ -236,7 +236,7 @@ namespace RC::UEGenerator
         std::unordered_map<UEnum*, FNumericProperty*> m_underlying_enum_props;
         std::set<UEnum*> m_blueprint_visible_enums;
         std::set<UScriptStruct*> m_blueprint_visible_structs;
-        std::map<std::wstring, std::shared_ptr<std::set<std::wstring>>> m_module_dependencies;
+        std::map<std::wstring, std::set<std::wstring>> m_module_dependencies;
 
         std::vector<GeneratedSourceFile> m_header_files;
         std::unordered_set<UStruct*> m_structs_that_need_get_type_hash;
@@ -341,7 +341,7 @@ namespace RC::UEGenerator
         auto static determine_primary_game_module_name() -> std::wstring;
 
       public:
-        auto add_module_and_sub_module_dependencies(std::set<std::wstring>& out_module_dependencies, std::wstring const& module_name, bool add_self_module = true)
+        auto add_module_and_sub_module_dependencies(std::set<std::wstring_view>& out_module_dependencies, std::wstring const& module_name)
                 -> void;
         auto static collect_blacklisted_parameter_names(UStruct* property, bool skip_self) -> CaseInsensitiveSet;
 

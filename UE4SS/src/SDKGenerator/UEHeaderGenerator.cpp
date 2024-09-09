@@ -405,13 +405,11 @@ namespace RC::UEGenerator
         module_build_file.append_line(STR("PublicDependencyModuleNames.AddRange(new string[] {"));
         module_build_file.begin_indent_level();
 
-        std::set<std::wstring> all_module_dependencies = this->m_forced_module_dependencies;
-        std::set<std::wstring> clean_module_dependencies{};
-        add_module_and_sub_module_dependencies(clean_module_dependencies, module_name, false);
+        std::set<std::wstring_view> all_module_dependencies{};
+        all_module_dependencies.insert(m_forced_module_dependencies.begin(), m_forced_module_dependencies.end());
+        add_module_and_sub_module_dependencies(all_module_dependencies, module_name);
 
-        all_module_dependencies.insert(clean_module_dependencies.begin(), clean_module_dependencies.end());
-
-        for (std::wstring const& other_module_name : all_module_dependencies)
+        for (auto const& other_module_name : all_module_dependencies)
         {
             module_build_file.append_line(fmt::format(STR("\"{}\","), other_module_name));
         }
@@ -441,7 +439,7 @@ namespace RC::UEGenerator
         }
         else
         {
-            module_impl_file.append_line(fmt::format(STR("IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {}, {});"), module_name, module_name));
+            module_impl_file.append_line(fmt::format(STR("IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {}, \"{}\");"), module_name, module_name));
         }
 
         module_impl_file.serialize_file_content_to_disk();
@@ -2163,27 +2161,14 @@ namespace RC::UEGenerator
         return uppercase_string;
     }
 
-    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<std::wstring>& out_module_dependencies,
-                                                                   std::wstring const& module_name,
-                                                                   bool add_self_module) -> void
+    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<std::wstring_view>& out_module_dependencies, std::wstring const& module_name) -> void
     {
-        // Prevent infinite recursion
-        if (out_module_dependencies.contains(module_name))
-        {
-            return;
-        }
-
-        if (add_self_module)
-        {
-            out_module_dependencies.insert(module_name);
-        }
         const auto iterator = m_module_dependencies.find(module_name);
-        if (iterator != m_module_dependencies.end())
+        if (iterator == m_module_dependencies.end()) return;
+
+        for (std::wstring const& dependency_module_name : iterator->second)
         {
-            for (std::wstring const& DependencyModuleName : *iterator->second)
-            {
-                out_module_dependencies.insert(DependencyModuleName);
-            }
+            out_module_dependencies.insert(dependency_module_name);
         }
     }
 
@@ -3757,6 +3742,7 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::dump_native_packages() -> void
     {
         ignore_selected_modules();
+        m_module_dependencies.insert({m_primary_module_name, {}});
 
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllConfigsEngineConfig)
         {
@@ -3865,10 +3851,10 @@ namespace RC::UEGenerator
         }
 
         Output::send(STR("Writing stub module build files for {} modules\n"), m_module_dependencies.size());
-        for (const auto& module_pair : m_module_dependencies)
+        for (const auto& [module_name,_] : m_module_dependencies)
         {
-            generate_module_implementation_file(module_pair.first);
-            generate_module_build_file(module_pair.first);
+            generate_module_implementation_file(module_name);
+            generate_module_build_file(module_name);
         }
 
         // Pass #2
@@ -4071,12 +4057,7 @@ namespace RC::UEGenerator
                     RC::fmt("Provided object %S is not of a supported type: %S", object->GetName().c_str(), object->GetClassPrivate()->GetName().c_str()));
         }
 
-        auto iterator = this->m_module_dependencies.find(module_name);
-        if (iterator == this->m_module_dependencies.end())
-        {
-            iterator = this->m_module_dependencies.insert({module_name, std::make_shared<std::set<std::wstring>>()}).first;
-        }
-
+        auto& out_dependency_module_names = m_module_dependencies[module_name];
         if (!header_file.has_content_to_save())
         {
             return false;
@@ -4089,9 +4070,8 @@ namespace RC::UEGenerator
         header_file.generate_file_contents();
 
         // Record module names used in the headers
-        std::shared_ptr<std::set<std::wstring>> out_dependency_module_names = iterator->second;
-        header_file.copy_dependency_module_names(*out_dependency_module_names);
-        implementation_file.copy_dependency_module_names(*out_dependency_module_names);
+        header_file.copy_dependency_module_names(out_dependency_module_names);
+        implementation_file.copy_dependency_module_names(out_dependency_module_names);
 
         return true;
     }
@@ -4219,7 +4199,7 @@ namespace RC::UEGenerator
         std::wstring filename = root_executable_path.filename().replace_extension().wstring();
 
         // Remove the shipping file postfix
-        std::wstring shipping_postfix = STR("-Win64-Shipping");
+        StringViewType shipping_postfix = STR("-Win64-Shipping");
         if (filename.ends_with(shipping_postfix))
         {
             filename.erase(filename.length() - shipping_postfix.length());
