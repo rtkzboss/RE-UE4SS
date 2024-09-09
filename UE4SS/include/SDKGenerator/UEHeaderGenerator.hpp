@@ -20,6 +20,7 @@ namespace RC::Unreal
     class UFunction;
     class UStruct;
     class FProperty;
+    class FNumericProperty;
     class UClass;
     class FField;
     class UEnum;
@@ -34,6 +35,7 @@ namespace RC::UEGenerator
     using UStruct = RC::Unreal::UStruct;
     using UClass = RC::Unreal::UClass;
     using FProperty = RC::Unreal::FProperty;
+    using FNumericProperty = RC::Unreal::FNumericProperty;
     using FObjectProperty = RC::Unreal::FObjectProperty;
     using FSoftObjectPath = RC::Unreal::FSoftObjectPath;
     using FField = RC::Unreal::FField;
@@ -232,9 +234,9 @@ namespace RC::UEGenerator
         std::set<std::wstring> m_classes_with_object_initializer;
 
         std::unordered_map<UStruct const*, void*> m_struct_defaults;
-        std::unordered_map<std::wstring, std::wstring> m_underlying_enum_types;
-        std::set<std::wstring> m_blueprint_visible_enums;
-        std::set<std::wstring> m_blueprint_visible_structs;
+        std::unordered_map<UEnum*, FNumericProperty*> m_underlying_enum_props;
+        std::set<UEnum*> m_blueprint_visible_enums;
+        std::set<UScriptStruct*> m_blueprint_visible_structs;
         std::map<std::wstring, std::shared_ptr<std::set<std::wstring>>> m_module_dependencies;
 
         std::vector<GeneratedSourceFile> m_header_files;
@@ -259,6 +261,13 @@ namespace RC::UEGenerator
         auto ignore_selected_modules() -> void;
 
         auto dump_native_packages() -> void;
+        auto preprocess_delegate_signature(UFunction* sig) -> void;
+        auto preprocess_class(UClass* uclass) -> void;
+        auto preprocess_script_struct(UScriptStruct* ustruct) -> void;
+        auto preprocess_struct(UStruct* ustruct) -> void;
+        auto preprocess_function(UFunction* func) -> void;
+        auto preprocess_property(FProperty* prop) -> void;
+        auto preprocess_blueprint_visible_property(FProperty* prop) -> void;
         auto generate_object_description_file(UObject* object) -> bool;
         auto generate_module_build_file(std::wstring const& module_name) -> void;
         auto generate_module_implementation_file(std::wstring_view module_name) -> void;
@@ -266,6 +275,8 @@ namespace RC::UEGenerator
         static auto needs_advanced_access(UStruct* this_struct, FProperty* prop) -> bool;
 
       private:
+        auto is_struct_blueprint_visible(UScriptStruct* ustruct) const -> bool;
+
         auto generate_interface_definition(UClass* function, GeneratedSourceFile& header_data) -> void;
         auto generate_object_definition(UClass* interface_function, GeneratedSourceFile& header_data) -> void;
         auto generate_struct_definition(UScriptStruct* property, GeneratedSourceFile& header_data) -> void;

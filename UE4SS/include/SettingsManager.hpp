@@ -51,6 +51,7 @@ namespace RC
             bool IgnoreEngineAndCoreUObject{true};
             bool MakeAllFunctionsBlueprintCallable{};
             bool MakeAllPropertyBlueprintsReadWrite{};
+            bool MakeAllTypesBlueprintable{};
             bool MakeEnumClassesBlueprintType{};
             bool MakeAllConfigsEngineConfig{};
         } UHTHeaderGenerator;

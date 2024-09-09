@@ -447,6 +447,15 @@ namespace RC::UEGenerator
         module_impl_file.serialize_file_content_to_disk();
     }
 
+    auto UEHeaderGenerator::is_struct_blueprint_visible(UScriptStruct* ustruct) const -> bool
+    {
+        for (; ustruct; ustruct = ustruct->GetSuperScriptStruct())
+        {
+            if (m_blueprint_visible_structs.contains(ustruct)) return true;
+        }
+        return false;
+    }
+
     auto UEHeaderGenerator::generate_interface_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
         const std::wstring interface_class_native_name = get_native_class_name(uclass);
@@ -765,10 +774,10 @@ namespace RC::UEGenerator
     {
         const StringType native_enum_name = get_native_enum_name(uenum, false);
         const int64 highest_enum_value = get_highest_enum(uenum);
-        const bool can_use_uint8_override = (highest_enum_value <= 255 && get_lowest_enum(uenum) >= 0);
+        const bool can_use_uint8_override = get_lowest_enum(uenum) >= 0 && highest_enum_value <= 255;
         const StringType enum_flags_string = generate_enum_flags(uenum);
-        const auto underlying_type = m_underlying_enum_types.find(native_enum_name);
-        const bool has_known_underlying_type = underlying_type != m_underlying_enum_types.end();
+        const auto underlying_prop = m_underlying_enum_props.find(uenum);
+        const bool has_known_underlying_prop = underlying_prop != m_underlying_enum_props.end();
         UEnum::ECppForm cpp_form = uenum->GetCppForm();
         bool enum_is_uint8{false};
 
@@ -786,7 +795,7 @@ namespace RC::UEGenerator
         }
         else if (cpp_form == UEnum::ECppForm::EnumClass)
         {
-            if (!has_known_underlying_type)
+            if (!has_known_underlying_prop)
             {
                 if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeEnumClassesBlueprintType && can_use_uint8_override)
                 {
@@ -801,9 +810,10 @@ namespace RC::UEGenerator
             }
             else
             {
-                std::wstring underlying_type_string = underlying_type->second;
+                PropertyTypeDeclarationContext context(native_enum_name, &header_data);
+                std::wstring underlying_prop_string = generate_property_type_declaration(underlying_prop->second, context);
 
-                header_data.append_line(fmt::format(STR("enum class {} : {} {{"), native_enum_name, underlying_type_string));
+                header_data.append_line(fmt::format(STR("enum class {} : {} {{"), native_enum_name, underlying_prop_string));
             }
         }
 
@@ -2248,7 +2258,8 @@ namespace RC::UEGenerator
             parent_blueprint_info = get_class_blueprint_info(super_class);
         }
 
-        if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite)
+        if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite ||
+            UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllTypesBlueprintable)
         {
             flag_format_helper.add_switch(STR("Blueprintable"));
         }
@@ -2425,11 +2436,6 @@ namespace RC::UEGenerator
 
                 const std::wstring enum_type_name = get_native_enum_name(enum_value);
 
-                if ((property->GetPropertyFlags() & CPF_BlueprintVisible) != 0)
-                {
-                    this->m_blueprint_visible_enums.insert(enum_type_name);
-                }
-
                 // Non-EnumClass enumerations should be wrapped into TEnumAsByte according to UHT, but implicit uint8s should not use TEnumAsByte
                 return fmt::format(STR("TEnumAsByte<{}>"), enum_type_name);
             }
@@ -2451,14 +2457,6 @@ namespace RC::UEGenerator
                 context.source_file->add_dependency_object(uenum, DependencyLevel::Include);
             }
             const std::wstring enum_type_name = get_native_enum_name(uenum);
-
-            if ((property->GetPropertyFlags() & CPF_BlueprintVisible) != 0)
-            {
-                this->m_blueprint_visible_enums.insert(enum_type_name);
-            }
-
-            const std::wstring underlying_enum_type = generate_property_type_declaration(underlying_property, context);
-            this->m_underlying_enum_types.insert({enum_type_name, underlying_enum_type});
             return enum_type_name;
         }
 
@@ -2695,7 +2693,6 @@ namespace RC::UEGenerator
             {
                 context.source_file->add_dependency_object(script_struct, DependencyLevel::Include);
             }
-            this->m_blueprint_visible_structs.insert(native_struct_name);
 
             return native_struct_name;
         }
@@ -3038,8 +3035,9 @@ namespace RC::UEGenerator
         EStructFlags struct_own_flags = (EStructFlags)(struct_flags & (~(parent_struct_flags & STRUCT_Inherit)));
 
         const std::wstring native_struct_name = get_native_struct_name(script_struct);
-        if (is_struct_blueprint_type(script_struct) || m_blueprint_visible_structs.contains(native_struct_name) ||
-            UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite)
+        if (is_struct_blueprint_visible(script_struct) ||
+            UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllPropertyBlueprintsReadWrite ||
+            UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllTypesBlueprintable)
         {
             flag_format_helper.add_switch(STR("BlueprintType"));
         }
@@ -3070,16 +3068,13 @@ namespace RC::UEGenerator
         {
             flag_format_helper.add_switch(STR("Flags"));
         }
-        const std::wstring enum_native_name = get_native_enum_name(uenum);
-
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeEnumClassesBlueprintType)
         {
             auto cpp_form = uenum->GetCppForm();
             if (cpp_form == UEnum::ECppForm::EnumClass)
             {
-                const auto underlying_type = m_underlying_enum_types.find(enum_native_name);
-                if (underlying_type->second == STR("uint8") ||
-                    (underlying_type == m_underlying_enum_types.end() && (get_highest_enum(uenum) <= 255 && get_lowest_enum(uenum) >= 0)))
+                const auto underlying_prop = m_underlying_enum_props.find(uenum);
+                if (underlying_prop == m_underlying_enum_props.end() ? get_lowest_enum(uenum) >= 0 && get_highest_enum(uenum) <= 255 : underlying_prop->second->IsA<FByteProperty>())
                 {
                     // Underlying type is implicit or explicitly uint8.
                     flag_format_helper.add_switch(STR("BlueprintType"));
@@ -3277,9 +3272,9 @@ namespace RC::UEGenerator
                 flag_format_helper.get_meta()->add_parameter(STR("WorldContext"), param_name_str);
                 found_wco = true;
             }
-            if (auto as_struct_property = CastField<FStructProperty>(param))
+            if (auto prop = CastField<FStructProperty>(param))
             {
-                if (as_struct_property->GetStruct()->IsChildOf(latent_action_info))
+                if (prop->GetStruct()->IsChildOf(latent_action_info))
                 {
                     flag_format_helper.get_meta()->add_parameter(STR("LatentInfo"), param_name_str);
                     flag_format_helper.get_meta()->add_switch(STR("Latent"));
@@ -3355,6 +3350,7 @@ namespace RC::UEGenerator
                 {
                     property_name[0] = towupper(property_name[0]);
                     property_name.insert(0, STR("New"));
+                    Output::send<LogLevel::Warning>(STR("Renaming shadowed property {}\n"), property->GetFullName());
                 }
                 param_declaration.append(property_name);
 
@@ -3564,32 +3560,6 @@ namespace RC::UEGenerator
             }
         }
         return blueprint_info;
-    }
-
-    auto UEHeaderGenerator::is_struct_blueprint_type(UScriptStruct* script_struct) -> bool
-    {
-        UScriptStruct* super_struct = script_struct->GetSuperScriptStruct();
-        if (super_struct != NULL)
-        {
-            bool is_super_struct_blueprint_type = is_struct_blueprint_type(super_struct);
-            if (is_super_struct_blueprint_type)
-            {
-                return true;
-            }
-        }
-        bool is_blueprint_type = false;
-
-        for (FProperty* property : script_struct->ForEachProperty())
-        {
-            auto property_flags = property->GetPropertyFlags();
-
-            if ((property_flags & CPF_BlueprintVisible) != 0)
-            {
-                is_blueprint_type = true;
-                break;
-            }
-        }
-        return is_blueprint_type;
     }
 
     auto UEHeaderGenerator::is_function_parameter_shadowing(UClass* uclass, FProperty* function_parameter) -> bool
@@ -3863,6 +3833,19 @@ namespace RC::UEGenerator
             return RC::LoopAction::Continue;
         });
 
+        for (UFunction* f : native_delegates_to_dump)
+        {
+            preprocess_delegate_signature(f);
+        }
+        for (UClass* c : native_classes_to_dump)
+        {
+            preprocess_class(c);
+        }
+        for (UScriptStruct* s : native_structs_to_dump)
+        {
+            preprocess_struct(s);
+        }
+
         Output::send(STR("Attempting to dump {} native classes\n"), native_classes_to_dump.size());
 
         for (UFunction* delegate_signature_function : native_delegates_to_dump)
@@ -3947,6 +3930,99 @@ namespace RC::UEGenerator
         }
 
         Output::send(STR("Done!\n"));
+    }
+
+    auto UEHeaderGenerator::preprocess_delegate_signature(UFunction* sig) -> void
+    {
+        preprocess_function(sig);
+    }
+    auto UEHeaderGenerator::preprocess_class(UClass* uclass) -> void
+    {
+        preprocess_struct(uclass);
+    }
+    auto UEHeaderGenerator::preprocess_script_struct(UScriptStruct* ustruct) -> void
+    {
+        preprocess_struct(ustruct);
+    }
+    auto UEHeaderGenerator::preprocess_struct(UStruct* ustruct) -> void
+    {
+        auto uscriptstruct = Cast<UScriptStruct>(ustruct);
+        //for (; ustruct; ustruct = ustruct->GetSuperStruct())
+        {
+            for (auto prop : ustruct->ForEachProperty())
+            {
+                preprocess_property(prop);
+                if (prop->HasAnyPropertyFlags(CPF_BlueprintVisible))
+                {
+                    if (uscriptstruct) m_blueprint_visible_structs.insert(uscriptstruct);
+                    preprocess_blueprint_visible_property(prop);
+                }
+            }
+            for (auto func : ustruct->ForEachFunction())
+            {
+                preprocess_function(func);
+            }
+        }
+    }
+    auto UEHeaderGenerator::preprocess_function(UFunction* func) -> void
+    {
+        for (auto prop : func->ForEachProperty())
+        {
+            preprocess_property(prop);
+            if (func->HasAnyFunctionFlags(FUNC_BlueprintCallable))
+            {
+                preprocess_blueprint_visible_property(prop);
+            }
+        }
+    }
+    auto UEHeaderGenerator::preprocess_property(FProperty* property) -> void
+    {
+        if (auto prop = CastField<FEnumProperty>(property))
+        {
+            auto uenum = prop->GetEnum();
+            if (auto underlying = CastField<FNumericProperty>(prop->GetUnderlyingProperty()))
+            {
+                m_underlying_enum_props.insert({uenum, underlying});
+            }
+            else
+            {
+                Output::send<LogLevel::Error>(STR("Non-numeric underlying property for enum {}"), uenum->GetFullName());
+            }
+        }
+    }
+    auto UEHeaderGenerator::preprocess_blueprint_visible_property(FProperty* property) -> void
+    {
+        if (auto prop = CastField<FStructProperty>(property))
+        {
+            m_blueprint_visible_structs.insert(prop->GetStruct());
+        }
+        if (auto prop = CastField<FNumericProperty>(property))
+        {
+            if (auto uenum = prop->GetIntPropertyEnum())
+            {
+                this->m_blueprint_visible_enums.insert(uenum);
+            }
+        }
+        if (auto prop = CastField<FEnumProperty>(property))
+        {
+            if (auto uenum = prop->GetEnum())
+            {
+                this->m_blueprint_visible_enums.insert(uenum);
+            }
+        }
+        if (auto prop = CastField<FArrayProperty>(property))
+        {
+            preprocess_blueprint_visible_property(prop->GetInner());
+        }
+        if (auto prop = CastField<FSetProperty>(property))
+        {
+            preprocess_blueprint_visible_property(prop->GetElementProp());
+        }
+        if (auto prop = CastField<FMapProperty>(property))
+        {
+            preprocess_blueprint_visible_property(prop->GetKeyProp());
+            preprocess_blueprint_visible_property(prop->GetValueProp());
+        }
     }
 
     auto UEHeaderGenerator::generate_object_description_file(UObject* object) -> bool
