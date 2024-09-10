@@ -280,6 +280,7 @@ namespace RC::UEGenerator
         auto preprocess_struct(UStruct* ustruct) -> void;
         auto preprocess_function(UFunction* func) -> void;
         auto preprocess_property(FProperty* prop, bool blueprint_visible) -> void;
+        auto preprocess_hashed_property(FProperty* property) -> void;
         auto generate_object_description_file(UObject* object) -> bool;
         auto generate_module_build_file(std::wstring const& module_name) -> void;
         auto generate_module_implementation_file(std::wstring_view module_name) -> void;
@@ -298,6 +299,7 @@ namespace RC::UEGenerator
         auto generate_object_implementation(UClass* property, GeneratedSourceFile& implementation_file) -> void;
         auto generate_struct_implementation(UScriptStruct* property, GeneratedSourceFile& implementation_file) -> void;
 
+        auto generate_get_type_hash(UScriptStruct* ustruct, GeneratedSourceFile& header_file) -> void;
         auto generate_property(UStruct* ustruct, FProperty* property, GeneratedSourceFile& header_data) -> void;
         auto generate_function(UClass* uclass,
                                UFunction* function,

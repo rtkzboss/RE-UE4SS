@@ -770,6 +770,10 @@ namespace RC::UEGenerator
 
         header_data.end_indent_level();
         header_data.append_line(STR("};"));
+        if (m_structs_that_need_get_type_hash.contains(script_struct))
+        {
+            generate_get_type_hash(script_struct, header_data);
+        }
     }
 
     auto UEHeaderGenerator::generate_enum_definition(UEnum* uenum, GeneratedSourceFile& header_data) -> void
@@ -1115,6 +1119,12 @@ namespace RC::UEGenerator
 
         implementation_file.end_indent_level();
         implementation_file.append_line(STR("}"));
+    }
+
+    auto UEHeaderGenerator::generate_get_type_hash(UScriptStruct* ustruct, GeneratedSourceFile& header_file) -> void
+    {
+        auto name = get_native_struct_name(ustruct);
+        header_file.append_line(fmt::format(STR("FORCEINLINE uint32 GetTypeHash(const {}&) {{ return 0; }}"), name));
     }
 
     auto UEHeaderGenerator::generate_property(UStruct* ustruct, FProperty* property, GeneratedSourceFile& header_data) -> void
@@ -3898,20 +3908,6 @@ namespace RC::UEGenerator
         {
             auto object = header_file.get_corresponding_object();
             bool is_struct = object->IsA<UStruct>();
-            bool is_class = object->IsA<UClass>();
-            if ((is_struct || is_class) && m_structs_that_need_get_type_hash.find(std::bit_cast<UStruct*>(object)) != m_structs_that_need_get_type_hash.end())
-            {
-                File::StringType name{};
-                if (is_class)
-                {
-                    name = get_native_class_name(std::bit_cast<UClass*>(object));
-                }
-                else if (is_struct)
-                {
-                    name = get_native_struct_name(std::bit_cast<UScriptStruct*>(object));
-                }
-                header_file.append_line(fmt::format(STR("FORCEINLINE uint32 GetTypeHash(const {}) {{ return 0; }}"), name));
-            }
 
             // Case for FTickFunction struct
             if (is_struct)
@@ -4003,13 +3999,6 @@ namespace RC::UEGenerator
                 if (blueprint_visible) m_blueprint_visible_enums.insert(uenum);
             }
         }
-        if (auto prop = CastField<FMapProperty>(property))
-        {
-            if (auto key_prop = CastField<FStructProperty>(prop->GetKeyProp()))
-            {
-                m_structs_that_need_get_type_hash.emplace(key_prop->GetStruct());
-            }
-        }
         if (auto prop = CastField<FArrayProperty>(property))
         {
             preprocess_property(prop->GetInner(), blueprint_visible);
@@ -4017,15 +4006,24 @@ namespace RC::UEGenerator
         if (auto prop = CastField<FSetProperty>(property))
         {
             preprocess_property(prop->GetElementProp(), blueprint_visible);
+            preprocess_hashed_property(prop->GetElementProp());
         }
         if (auto prop = CastField<FMapProperty>(property))
         {
             preprocess_property(prop->GetKeyProp(), blueprint_visible);
+            preprocess_hashed_property(prop->GetKeyProp());
             preprocess_property(prop->GetValueProp(), blueprint_visible);
         }
         if (auto prop = CastField<FStructProperty>(property))
         {
             if (blueprint_visible) m_blueprint_visible_structs.insert(prop->GetStruct());
+        }
+    }
+    auto UEHeaderGenerator::preprocess_hashed_property(FProperty* property) -> void
+    {
+        if (auto prop = CastField<FStructProperty>(property))
+        {
+            m_structs_that_need_get_type_hash.insert(prop->GetStruct());
         }
     }
 
