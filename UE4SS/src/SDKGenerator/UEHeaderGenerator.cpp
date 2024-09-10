@@ -1419,9 +1419,8 @@ namespace RC::UEGenerator
 
         //Output::send<LogLevel::Verbose>(STR("assign {}\n"), property->GetFullName());
 
-        if (property->IsA<FByteProperty>())
+        if (auto prop = CastField<FByteProperty>(property))
         {
-            auto prop = static_cast<FByteProperty*>(property);
             UEnum* uenum = prop->GetEnum();
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
@@ -1433,9 +1432,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FEnumProperty>())
+        if (auto prop = CastField<FEnumProperty>(property))
         {
-            auto prop = static_cast<FEnumProperty*>(property);
             FNumericProperty* underlying = prop->GetUnderlyingProperty();
             UEnum* uenum = prop->GetEnum();
             if (uenum == NULL)
@@ -1456,9 +1454,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FBoolProperty>())
+        if (auto prop = CastField<FBoolProperty>(property))
         {
-            auto prop = static_cast<FBoolProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1474,9 +1471,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FNameProperty>())
+        if (auto prop = CastField<FNameProperty>(property))
         {
-            auto prop = static_cast<FNameProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1487,9 +1483,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FStrProperty>())
+        if (auto prop = CastField<FStrProperty>(property))
         {
-            auto prop = static_cast<FStrProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1500,9 +1495,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FTextProperty>())
+        if (auto prop = CastField<FTextProperty>(property))
         {
-            auto prop = static_cast<FTextProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1514,9 +1508,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FClassProperty>())
+        if (auto prop = CastField<FClassProperty>(property))
         {
-            FClassProperty* prop = static_cast<FClassProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1544,10 +1537,26 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FObjectProperty>())
+        if (auto prop = CastField<FInterfaceProperty>(property))
+        {
+            for (int32 index = 0; index < property->GetArrayDim(); ++index)
+            {
+                if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
+
+                FScriptInterface value = prop->GetPropertyValueInContainer(object, index);
+                if (!value.ObjectPointer)
+                {
+                    // If class value is NULL, generate a simple NULL assignment
+                    generate_assignment_expression(this_struct, property, index, STR("nullptr"), implementation_file, property_scope);
+                    continue;
+                }
+                Output::send<LogLevel::Warning>(STR("Unhandled value of FInterfaceProperty {} = {}\n"), property->GetFullName(), value.ObjectPointer->GetFullName());
+            }
+            return;
+        }
+        if (auto prop = CastField<FObjectProperty>(property))
         {
             // Object Properties are handled either as NULL, default subobjects, or UClass objects
-            FObjectProperty* prop = static_cast<FObjectProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1739,9 +1748,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FSoftObjectProperty>())
+        if (auto prop = CastField<FSoftObjectProperty>(property))
         {
-            auto prop = static_cast<FSoftObjectProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1759,9 +1767,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FWeakObjectProperty>())
+        if (auto prop = CastField<FWeakObjectProperty>(property))
         {
-            auto prop = static_cast<FWeakObjectProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1778,9 +1785,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FStructProperty>())
+        if (auto prop = CastField<FStructProperty>(property))
         {
-            auto prop = static_cast<FStructProperty*>(property);
             UScriptStruct* script_struct = prop->GetStruct();
             FName struct_name = script_struct->GetNamePrivate();
             if (!script_struct)
@@ -1832,7 +1838,7 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FArrayProperty>())
+        if (auto prop = CastField<FArrayProperty>(property))
         {
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
@@ -1851,7 +1857,7 @@ namespace RC::UEGenerator
                 }
                 else
                 {
-                    generate_assignment_expression(this_struct, property, index, STR(""), implementation_file, property_scope, STR(".Empty()"));
+                    generate_assignment_expression(this_struct, prop, index, STR(""), implementation_file, property_scope, STR(".Empty()"));
                 }
             }
             return;
@@ -1867,24 +1873,23 @@ namespace RC::UEGenerator
             Output::send<LogLevel::Warning>(STR("FMapProperty default value is unimplemented in {}\n"), property->GetFullName());
             return;
         }
-        if (property->IsA<FNumericProperty>())
+        if (auto prop = CastField<FNumericProperty>(property))
         {
-            FNumericProperty* numeric_property = static_cast<FNumericProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
 
                 std::wstring value_str;
-                if (!numeric_property->IsFloatingPoint())
+                if (!prop->IsFloatingPoint())
                 {
                     // TODO: shouldn't need const_cast here
-                    int64 value = numeric_property->GetSignedIntPropertyValue(const_cast<void*>(numeric_property->ContainerPtrToValuePtr<void>(object)));
+                    int64 value = prop->GetSignedIntPropertyValue(const_cast<void*>(prop->ContainerPtrToValuePtr<void>(object)));
                     value_str = std::to_wstring(value);
                 }
                 else
                 {
-                    double value = numeric_property->GetFloatingPointPropertyValue(numeric_property->ContainerPtrToValuePtr<void>(object));
-                    if (numeric_property->IsA<FDoubleProperty>())
+                    double value = prop->GetFloatingPointPropertyValue(prop->ContainerPtrToValuePtr<void>(object));
+                    if (prop->IsA<FDoubleProperty>())
                     {
                         value_str = fmt::format(STR("{:.17e}"), value);
                     }
@@ -1897,9 +1902,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FMulticastDelegateProperty>())
+        if (auto prop = CastField<FMulticastDelegateProperty>(property))
         {
-            auto prop = static_cast<FMulticastDelegateProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
@@ -1908,9 +1912,8 @@ namespace RC::UEGenerator
             }
             return;
         }
-        if (property->IsA<FDelegateProperty>())
+        if (auto prop = CastField<FDelegateProperty>(property))
         {
-            auto prop = static_cast<FDelegateProperty*>(property);
             for (int32 index = 0; index < property->GetArrayDim(); ++index)
             {
                 if (!write_defaults && is_default_value(property, object, archetype, index)) continue;
