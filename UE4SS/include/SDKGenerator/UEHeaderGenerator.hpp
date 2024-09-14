@@ -109,6 +109,8 @@ namespace RC::UEGenerator
 
     class GeneratedFile
     {
+      public:
+        static constexpr StringViewType INDENT = STR("    ");
       protected:
         std::wstring m_file_base_name;
         FFilePath m_full_file_path;
@@ -125,8 +127,26 @@ namespace RC::UEGenerator
         GeneratedFile(GeneratedFile&&) = default;
         auto operator=(const GeneratedFile&) -> void = delete;
 
-        auto append_line(std::wstring_view line) -> void;
-        auto append_line_no_indent(std::wstring_view line) -> void;
+        auto append_line() -> void;
+        auto append_line(StringViewType line) -> void;
+        auto append_line_no_indent(StringViewType line) -> void;
+
+        template <class... Args>
+        auto format_line_no_indent(std::wformat_string<Args...> fmt, Args&&... args)
+        {
+            std::format_to(std::back_inserter(m_file_contents_buffer), fmt, std::forward<Args>(args)...);
+            m_file_contents_buffer += '\n';
+        }
+        template <class... Args>
+        auto format_line(std::wformat_string<Args...> fmt, Args&&... args)
+        {
+            for (int32_t i = 0; i < m_current_indent_count; i++)
+            {
+                m_file_contents_buffer += INDENT;
+            }
+            format_line_no_indent(fmt, std::forward<Args>(args)...);
+        }
+
         auto begin_indent_level() -> void;
         auto end_indent_level() -> void;
         auto serialize_file_content_to_disk() -> bool;
@@ -135,14 +155,53 @@ namespace RC::UEGenerator
         virtual auto generate_file_contents() -> std::wstring;
     };
 
+    struct PropertyAccess
+    {
+        FProperty* prop;
+        int32_t index;
+    };
+    struct ArrayAccess
+    {
+        int32_t index;
+    };
+    struct MapAccess
+    {
+        FProperty* key_prop;
+        void const* key;
+    };
+    using PropertySpec = std::variant<PropertyAccess, ArrayAccess>;
     class PropertyScope
     {
+        std::wstring_view m_root;
         std::vector<std::tuple<FProperty*, int32_t>> m_elements;
 
       public:
+        PropertyScope(std::wstring_view root);
+        PropertyScope();
         auto pop() -> void;
         auto push(FProperty* prop, int32_t index) -> void;
-        auto access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> std::wstring;
+        auto push_array(int32_t index) -> void;
+        auto access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> StringType;
+        //auto assign(UStruct* this_struct, StringViewType value, GeneratedSourceFile& implementation_file) const -> StringType;
+    };
+
+    class DefaultSubobjects
+    {
+        std::unordered_map<FName, size_t> objects;
+        std::vector<std::pair<FName, UObject*>> objects_order;
+
+      public:
+        auto find(FName name) const -> std::pair<UObject*, bool>;
+        auto insert_or_update(UObject* value) -> void;
+        auto insert_or_update(FName name, UObject* value) -> void;
+        auto begin() const -> std::vector<std::pair<FName, UObject*>>::const_iterator
+        {
+            return objects_order.begin();
+        }
+        auto end() const -> std::vector<std::pair<FName, UObject*>>::const_iterator
+        {
+            return objects_order.end();
+        }
     };
 
     class GeneratedSourceFile : public GeneratedFile
@@ -152,14 +211,15 @@ namespace RC::UEGenerator
         std::map<UObject*, DependencyLevel> m_dependencies;
         std::set<std::wstring> m_extra_includes;
         mutable std::set<std::wstring> m_dependency_module_names;
+        std::unordered_map<FProperty*, uint32_t> m_cons_properties;
         UObject* m_object;
         GeneratedSourceFile* m_header_file;
         bool m_is_implementation_file;
-        bool m_needs_get_type_hash;
-        uint32_t m_gen_id = 0;
+        uint32_t m_gen_id = 1;
 
       public:
         std::wstring m_implementation_constructor;
+        std::unordered_map<UObject const*, int32_t> dso_lookup;
         std::unordered_set<FName> parent_property_names{};
         std::map<FProperty*, std::pair<PropertyScope, StringType>> attachments{};
 
@@ -189,10 +249,6 @@ namespace RC::UEGenerator
         {
             return m_file_contents_buffer.size();
         }
-        auto set_need_get_type_hash(bool new_value) -> void
-        {
-            m_needs_get_type_hash = new_value;
-        }
         auto get_corresponding_object() -> UObject*
         {
             return m_object;
@@ -208,6 +264,7 @@ namespace RC::UEGenerator
         auto static create_source_file(const FFilePath& root_dir, std::wstring_view module_name, std::wstring const& base_name, bool is_implementation_file, UObject* object)
                 -> GeneratedSourceFile;
         virtual auto generate_file_contents() -> std::wstring override;
+        auto generate_cons_property(FProperty* prop) -> StringType;
 
       protected:
         auto has_dependency(UObject* object, DependencyLevel dependency_level) -> bool;
@@ -244,10 +301,11 @@ namespace RC::UEGenerator
         std::set<std::wstring> m_forced_module_dependencies;
         std::set<std::wstring> m_ignored_module_names;
 
-        std::unordered_map<UStruct const*, void*> m_struct_defaults;
+        std::unordered_map<UStruct*, void*> m_struct_defaults;
         std::unordered_map<UEnum*, FNumericProperty*> m_underlying_enum_props;
         std::set<UEnum*> m_blueprint_visible_enums;
         std::set<UScriptStruct*> m_blueprint_visible_structs;
+        std::unordered_map<UClass*, DefaultSubobjects> m_default_subobjects;
         std::map<std::wstring, std::set<std::wstring>> m_module_dependencies;
         PropertyListView bind_widget;
         PropertyListView ignore_default;
@@ -276,6 +334,7 @@ namespace RC::UEGenerator
         auto dump_native_packages() -> void;
         auto preprocess_delegate_signature(UFunction* sig) -> void;
         auto preprocess_class(UClass* uclass) -> void;
+        auto preprocess_cdo_property(FProperty* property, void const* data, DefaultSubobjects& dsos) -> void;
         auto preprocess_script_struct(UScriptStruct* ustruct) -> void;
         auto preprocess_struct(UStruct* ustruct) -> void;
         auto preprocess_function(UFunction* func) -> void;
@@ -308,19 +367,22 @@ namespace RC::UEGenerator
                                CaseInsensitiveSet const& blacklisted_parameter_names,
                                bool generate_as_override = false) -> void;
 
-        auto generate_property_assignment(UStruct* this_struct,
-                                          UStruct* ustruct,
-                                          FProperty* property,
-                                          void const* object,
-                                          void const* archetype,
-                                          GeneratedSourceFile& implementation_file,
-                                          PropertyScope& property_scope,
-                                          bool write_defaults) -> void;
+        auto generate_class_value(UClass* uclass, UClass* metaclass, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_struct_value(UScriptStruct* value, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_property_value(UStruct* this_struct, FProperty* property, void const* data, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_property_element_value(UStruct* this_struct, FProperty* property, void const* data, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_object_property_element_value(UStruct* this_struct, FProperty* prop, UObject* value, UClass* metaclass, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_default_property_value(UStruct* this_struct, FProperty* property, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_default_property_element_value(UStruct* this_struct, FProperty* property, GeneratedSourceFile& implementation_file) -> StringType;
+        auto generate_property_assignment_in_container(UStruct* this_struct, FProperty* property, void const* object, void const* archetype, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
+        auto generate_property_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
+        auto generate_property_element_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
         auto generate_function_implementation(UClass* uclass,
                                               UFunction* function,
                                               GeneratedSourceFile& implementation_file,
                                               bool is_generating_interface,
                                               CaseInsensitiveSet const& blacklisted_parameter_names) -> void;
+        auto generate_dso_value(UStruct* this_struct, UObject* object, GeneratedSourceFile& implementation_file) -> StringType;
 
         auto generate_interface_flags(UClass* uinterface) const -> std::wstring;
         auto generate_class_flags(UClass* uclass) const -> std::wstring;
@@ -337,13 +399,12 @@ namespace RC::UEGenerator
                                               std::wstring_view context_name,
                                               CaseInsensitiveSet const& blacklisted_parameter_names,
                                               int32_t* out_num_params = NULL) -> std::wstring;
-        auto generate_default_property_value(FProperty* property, GeneratedSourceFile& header_data, std::wstring_view ContextName) -> std::wstring;
 
-        auto is_default_value(FProperty* prop, void const* object, void const* archetype, int32_t index) -> bool;
+        auto is_default_value(FProperty* prop, void const* object, void const* archetype) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
         auto generate_soft_path(std::wstring_view kind, FSoftObjectPath const& path) -> std::wstring;
         auto generate_object_finder(UClass* class_, std::wstring_view path, GeneratedSourceFile& implementation_file, bool is_class) -> std::wstring;
-        auto generate_enum_value(UEnum* uenum, int64_t enum_value) -> std::wstring;
+        auto generate_enum_value(UEnum* uenum, int64_t enum_value, GeneratedSourceFile& implementation_file) -> StringType;
         auto generate_assignment_expression(UStruct* this_struct,
                                             FProperty* property,
                                             int32_t index,
@@ -352,7 +413,7 @@ namespace RC::UEGenerator
                                             PropertyScope& property_scope,
                                             std::wstring_view operator_type = STR(" = ")) -> void;
 
-        auto static generate_parameter_count_string(int32_t parameter_count) -> std::wstring;
+        auto static generate_parameter_count_string(int32_t parameter_count) -> CharType const*;
         auto static determine_primary_game_module_name() -> std::wstring;
 
       public:

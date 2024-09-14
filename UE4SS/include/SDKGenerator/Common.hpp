@@ -12,6 +12,7 @@ namespace RC
         class UScriptStruct;
         class FProperty;
         class UFunction;
+        class FFieldClass;
     } // namespace Unreal
 
     namespace UEGenerator
@@ -39,8 +40,9 @@ namespace RC
         auto generate_property_lua_name(Unreal::FProperty* property, bool is_top_level_declaration, Unreal::UObject* class_context) -> File::StringType;
         auto sanitize_property_name(const File::StringType& property_name) -> File::StringType;
         auto generate_delegate_name(Unreal::FProperty* property, const File::StringType& context_name) -> File::StringType;
-        auto get_native_class_name(Unreal::UClass* uclass, bool interface_name = false) -> File::StringType;
+        auto get_native_class_name(Unreal::UClass const* uclass, bool interface_name = false) -> File::StringType;
         auto get_native_struct_name(Unreal::UScriptStruct* script_struct) -> File::StringType;
+        auto get_native_field_class_name(Unreal::FFieldClass* fc) -> StringType;
         auto get_native_delegate_type_name(Unreal::UFunction* signature_function, Unreal::UClass* current_class = nullptr, bool strip_outer_name = false)
                 -> File::StringType;
         auto is_delegate_signature_function(Unreal::UFunction* signature_function) -> bool;

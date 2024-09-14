@@ -35,7 +35,7 @@ namespace RC::UEGenerator
 {
     using namespace Unreal;
 
-    auto get_native_class_name(UClass* uclass, bool interface_name) -> File::StringType
+    auto get_native_class_name(UClass const* uclass, bool interface_name) -> File::StringType
     {
         File::StringType result_string;
 
@@ -96,6 +96,11 @@ namespace RC::UEGenerator
         result_string.append(script_struct->GetName());
 
         return result_string;
+    }
+
+    auto get_native_field_class_name(FFieldClass* fc) -> StringType
+    {
+        return fmt::format(STR("F{}"), fc->GetName());
     }
 
     auto sanitize_property_name(const File::StringType& property_name) -> File::StringType
