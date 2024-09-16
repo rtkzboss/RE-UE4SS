@@ -2400,6 +2400,11 @@ namespace RC::UEGenerator
     }
     //*/
 
+    static auto needs_reference_workaround(FProperty* property) -> bool
+    {
+        auto cp = CastField<FClassProperty>(property);
+        return property->HasAllPropertyFlags(CPF_ReferenceParm | CPF_OutParm | CPF_ConstParm) && property->IsA<FObjectProperty>() && (!cp || !cp->GetMetaClass() || cp->GetMetaClass() == UObject::StaticClass());
+    }
     auto UEHeaderGenerator::generate_function_argument_flags(FProperty* property) const -> std::wstring
     {
         FlagFormatHelper flag_format_helper{};
@@ -2412,7 +2417,7 @@ namespace RC::UEGenerator
 
         // We only want to add UPARAM(Ref) when parameter is marked as reference AND output,
         // while not being marked as constant, because if it's marked as constant, it might be a parameter passed by const reference
-        if ((property_flags & CPF_ReferenceParm) != 0 && (property_flags & CPF_OutParm) != 0 && (property_flags & CPF_ConstParm) == 0)
+        if (property->HasAllPropertyFlags(CPF_ReferenceParm | CPF_OutParm) && !property->HasAnyPropertyFlags(CPF_ConstParm) || needs_reference_workaround(property))
         {
             flag_format_helper.add_switch(STR("Ref"));
         }
@@ -2940,9 +2945,13 @@ namespace RC::UEGenerator
                 PropertyTypeDeclarationContext context(context_name, &header_data);
                 param_declaration.append(generate_property_type_declaration(property, context));
 
+                if (needs_reference_workaround(property))
+                {
+                    // UHT chokes on `const UObject*&`, so we generate `UPARAM(ref) const UOBJECT*` instead in generate_function_argument_flags
+                }
                 // Reference will be appended if the parameter has a CPF_ReferenceParm flag set,
                 // which would also be always set for output parameters
-                if ((property_flags & (CPF_ReferenceParm | CPF_OutParm)) != 0 || should_force_const_ref)
+                else if ((property_flags & (CPF_ReferenceParm | CPF_OutParm)) != 0 || should_force_const_ref)
                 {
                     param_declaration.append(STR("&"));
                 }
@@ -3968,8 +3977,8 @@ namespace RC::UEGenerator
         implementation_file.serialize_file_content_to_disk(*this);
 
         // Record module names used in the files
-        //header_file.coalesce_module_dependencies();
-        //implementation_file.coalesce_module_dependencies();
+        header_file.coalesce_module_dependencies();
+        implementation_file.coalesce_module_dependencies();
         out_dependency_module_names.insert(header_file.module_dependencies().begin(), header_file.module_dependencies().end());
         out_dependency_module_names.insert(implementation_file.module_dependencies().begin(), implementation_file.module_dependencies().end());
         return true;
@@ -4183,7 +4192,6 @@ namespace RC::UEGenerator
         if (package == get_package()) return;
         m_module_dependencies.insert(package);
     }
-    /*
     auto GeneratedSourceFile::coalesce_module_dependencies() -> void
     {
         std::unordered_set<UObject*> seen;
@@ -4227,7 +4235,6 @@ namespace RC::UEGenerator
             coalesce_property(prop->GetValueProp(), seen);
         }
     }
-    */
     auto GeneratedSourceFile::generate_includes_string(StringType& out, UEHeaderGenerator& generator) const -> void
     {
         std::vector<StringType> local_includes;
