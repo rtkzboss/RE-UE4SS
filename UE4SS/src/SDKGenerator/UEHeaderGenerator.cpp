@@ -455,12 +455,13 @@ namespace RC::UEGenerator
         const FFilePath module_file_path = m_root_directory / module_name / fmt::format(STR("{}.Build.cs"), module_name);
         GeneratedFile module_build_file = GeneratedFile(module_file_path);
 
-        std::set<StringType> public_deps{};
+        std::set<StringType> public_deps;
+        std::set<StringType> private_deps;
         for (auto const& module_name : m_forced_module_dependencies)
         {
             public_deps.insert(module_name);
         }
-        add_module_and_sub_module_dependencies(public_deps, package);
+        add_module_and_sub_module_dependencies(public_deps, private_deps, package);
 
         module_build_file.append_line(STR("using UnrealBuildTool;"));
         module_build_file.append_line();
@@ -487,17 +488,11 @@ namespace RC::UEGenerator
         module_build_file.end_indent_level();
         module_build_file.append_line(STR("});"));
 
-        std::vector<StringViewType> private_deps;
-        // TODO: better system for this
+        // TODO: better system for unreflected implicit dependencies
         if (public_deps.contains(STR("OnlineSubsystemUtils")))
         {
             // e.g. FBlueprintSessionResult
-            private_deps.push_back(STR("OnlineSubsystem"));
-        }
-        if (public_deps.contains(STR("ControlRig")))
-        {
-            // e.g. FRigUnit
-            private_deps.push_back(STR("RigVM"));
+            private_deps.insert(STR("OnlineSubsystem"));
         }
         if (!private_deps.empty())
         {
@@ -1855,14 +1850,19 @@ namespace RC::UEGenerator
         return uppercase_string;
     }
 
-    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<StringType>& out_module_dependencies, UPackage* package) -> void
+    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<StringType>& out_public, std::set<StringType>& out_private, UPackage* package) -> void
     {
         if (!package) return;
         const auto iterator = m_module_dependencies.find(package);
         if (iterator == m_module_dependencies.end()) return;
-        for (auto dep : iterator->second)
+        for (auto dep : iterator->second.public_deps)
         {
-            out_module_dependencies.insert(get_module_name_for_package(dep));
+            out_public.insert(get_module_name_for_package(dep));
+        }
+        for (auto dep : iterator->second.private_deps)
+        {
+            if (iterator->second.public_deps.contains(dep)) continue;
+            out_private.insert(get_module_name_for_package(dep));
         }
     }
 
@@ -3977,10 +3977,8 @@ namespace RC::UEGenerator
         implementation_file.serialize_file_content_to_disk(*this);
 
         // Record module names used in the files
-        header_file.coalesce_module_dependencies();
-        implementation_file.coalesce_module_dependencies();
-        out_dependency_module_names.insert(header_file.module_dependencies().begin(), header_file.module_dependencies().end());
-        out_dependency_module_names.insert(implementation_file.module_dependencies().begin(), implementation_file.module_dependencies().end());
+        header_file.coalesce_module_dependencies(out_dependency_module_names);
+        implementation_file.coalesce_module_dependencies(out_dependency_module_names);
         return true;
     }
 
@@ -4192,7 +4190,7 @@ namespace RC::UEGenerator
         if (package == get_package()) return;
         m_module_dependencies.insert(package);
     }
-    auto GeneratedSourceFile::coalesce_module_dependencies() -> void
+    auto GeneratedSourceFile::coalesce_module_dependencies(ModuleDeps& out) -> void
     {
         std::unordered_set<UObject*> seen;
         for (auto [dep, level] : m_dependencies)
@@ -4200,6 +4198,8 @@ namespace RC::UEGenerator
             if (level < DependencyLevel::Include) continue;
             coalesce_object(dep, seen);
         }
+        auto& out_deps = is_implementation() ? out.private_deps : out.public_deps;
+        out_deps.insert(module_dependencies().begin(), module_dependencies().end());
     }
     auto GeneratedSourceFile::coalesce_object(UObject* object, std::unordered_set<UObject*>& seen) -> void
     {

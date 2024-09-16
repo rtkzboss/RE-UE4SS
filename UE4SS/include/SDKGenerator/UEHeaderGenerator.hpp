@@ -274,6 +274,12 @@ namespace RC::UEGenerator
         }
     };
 
+    struct ModuleDeps
+    {
+        std::unordered_set<UPackage*> public_deps;
+        std::unordered_set<UPackage*> private_deps;
+    };
+
     class GeneratedSourceFile : public GeneratedFile
     {
       private:
@@ -332,7 +338,7 @@ namespace RC::UEGenerator
         auto has_content_to_save() const -> bool override;
         auto generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void override;
         auto generate_cons_property(FProperty* prop) -> StringType;
-        auto coalesce_module_dependencies() -> void;
+        auto coalesce_module_dependencies(ModuleDeps& out) -> void;
 
       protected:
         auto has_dependency(UObject* object, DependencyLevel dependency_level) -> bool;
@@ -370,7 +376,7 @@ namespace RC::UEGenerator
         std::set<UEnum*> m_blueprint_visible_enums;
         std::set<UScriptStruct*> m_blueprint_visible_structs;
         std::unordered_map<UClass*, DefaultSubobjects> m_default_subobjects;
-        std::unordered_map<UPackage*, std::unordered_set<UPackage*>> m_module_dependencies;
+        std::unordered_map<UPackage*, ModuleDeps> m_module_dependencies;
         PropertyListView bind_widget;
         PropertyListView ignore_default;
 
@@ -474,7 +480,7 @@ namespace RC::UEGenerator
         auto static determine_primary_game_module_name() -> StringType;
 
       public:
-        auto add_module_and_sub_module_dependencies(std::set<StringType>& out_module_dependencies, UPackage* package) -> void;
+        auto add_module_and_sub_module_dependencies(std::set<StringType>& out_public, std::set<StringType>& out_private, UPackage* package) -> void;
         auto static collect_blacklisted_parameter_names(UStruct* property, bool skip_self) -> CaseInsensitiveSet;
 
         auto static generate_object_pre_declaration(std::vector<StringType>& decls, UObject* object) -> void;
