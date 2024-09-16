@@ -66,13 +66,10 @@ namespace RC::UEGenerator
 {
     using namespace RC::Unreal;
 
-    std::map<File::StringType, UniqueName> UEHeaderGenerator::m_used_file_names{};
-    std::map<UObject*, int32_t> UEHeaderGenerator::m_dependency_object_to_unique_id{};
-
+    static auto is_subtype_valid(FProperty* property) -> bool;
     static auto is_subtype_struct_valid(UScriptStruct* subtype) -> bool
     {
-
-        static const std::vector<FName> invalid_subtype_structs = {
+        static const std::vector<FName> invalid_subtype_structs{
                 FName(STR("FloatInterval"), FNAME_Add),
                 FName(STR("SplineCurves"), FNAME_Add),
                 FName(STR("Int32Interval"), FNAME_Add),
@@ -99,53 +96,45 @@ namespace RC::UEGenerator
         };
 
         auto subtype_name = subtype->GetNamePrivate();
-        for (const auto& subtype_struct_name : invalid_subtype_structs)
+        for (auto subtype_struct_name : invalid_subtype_structs)
         {
-            if (subtype_name == subtype_struct_name)
-            {
-                return false;
-            }
+            if (subtype_name == subtype_struct_name) return false;
         }
         return true;
     }
-
-    static auto is_subtype_valid(FProperty* subtype) -> bool
+    static auto is_subtype_inner_valid(FProperty* property) -> bool
     {
-        if ((subtype->IsA<FNumericProperty>() && !subtype->IsA<FIntProperty>() && !subtype->IsA<FFloatProperty>() && !subtype->IsA<FByteProperty>()))
+        return !property->IsA<FWeakObjectProperty>() && is_subtype_valid(property);
+    }
+    static auto is_subtype_valid(FProperty* property) -> bool
+    {
+        if (property->IsA<FNumericProperty>())
         {
-            return false;
+            return property->IsA<FIntProperty>() || property->IsA<FInt64Property>() || property->IsA<FFloatProperty>() || property->IsA<FByteProperty>();
         }
-        else if (auto* as_array = CastField<FArrayProperty>(subtype); as_array)
+        if (auto prop = CastField<FArrayProperty>(property))
         {
-            auto array_inner = as_array->GetInner();
-            if (array_inner->IsA<FWeakObjectProperty>())
-            {
-                return false;
-            }
-            return is_subtype_valid(array_inner);
+            return is_subtype_inner_valid(prop->GetInner());
         }
-        else if (auto* as_map = CastField<FMapProperty>(subtype); as_map)
+        if (auto prop = CastField<FSetProperty>(property))
         {
-            auto map_key_prop = as_map->GetKeyProp();
-            auto map_value_prop = as_map->GetValueProp();
-            if (map_key_prop->IsA<FWeakObjectProperty>() || map_value_prop->IsA<FWeakObjectProperty>())
-            {
-                return false;
-            }
-            return is_subtype_valid(map_key_prop) && is_subtype_valid(map_value_prop);
+            return is_subtype_inner_valid(prop->GetElementProp());
         }
-        else if (auto* as_struct = CastField<FStructProperty>(subtype); as_struct)
+        if (auto prop = CastField<FMapProperty>(property))
         {
-            return is_subtype_struct_valid(as_struct->GetStruct());
+            return is_subtype_inner_valid(prop->GetKeyProp()) && is_subtype_inner_valid(prop->GetValueProp());
         }
-        else if (auto* as_enum = CastField<FEnumProperty>(subtype); as_enum)
+        if (auto prop = CastField<FStructProperty>(property))
         {
-            return as_enum->GetUnderlyingProperty()->IsA<FByteProperty>();
+            return is_subtype_struct_valid(prop->GetStruct());
         }
-        else
+        if (auto prop = CastField<FEnumProperty>(property))
         {
-            return true;
+            // TODO: inaccurate
+            return prop->GetUnderlyingProperty()->IsA<FByteProperty>();
         }
+        // TODO: ???
+        return true;
     }
 
     static auto string_to_uppercase(std::wstring s) -> std::wstring
@@ -411,14 +400,14 @@ namespace RC::UEGenerator
         auto owner = prop->GetOutermostOwner();
         if (auto owner_class = Cast<UClass>(owner); owner_class && owner_class->HasAnyClassFlags(CLASS_Native))
         {
-            implementation_file.add_dependency_object(owner_class, DependencyLevel::Include);
+            implementation_file.add_dependency(owner_class, DependencyLevel::Include);
             return fmt::format(STR("{}::StaticClass()->FindPropertyByName(\"{}\")"), get_native_class_name(owner_class), prop->GetName());
         }
         static UClass* UUserDefinedStruct_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.UserDefinedStruct"));
         // NoExport structs don't have STRUCT_Native...
         if (auto owner_struct = Cast<UScriptStruct>(owner); owner_struct && !owner_struct->IsA(UUserDefinedStruct_StaticClass))
         {
-            implementation_file.add_dependency_object(owner_struct, DependencyLevel::Include);
+            implementation_file.add_dependency(owner_struct, DependencyLevel::Include);
             return fmt::format(STR("TBaseStructure<{}>::Get()->FindPropertyByName(\"{}\")"), get_native_struct_name(owner_struct), prop->GetName());
         }
         Output::send<LogLevel::Error>(STR("Unimplemented advanced access for {}\n"), owner->GetFullName());
@@ -432,7 +421,7 @@ namespace RC::UEGenerator
             id = gen_id();
             format_line(STR("auto gen{} = {};"), id, generate_find_property(prop, *this));
         }
-        return std::format(STR("gen{}"), id);
+        return fmt::format(STR("gen{}"), id);
     }
     auto PropertyScope::access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> StringType
     {
@@ -461,14 +450,17 @@ namespace RC::UEGenerator
         return out;
     }
 
-    auto UEHeaderGenerator::generate_module_build_file(std::wstring const& module_name) -> void
+    auto UEHeaderGenerator::generate_module_build_file(UPackage* package, StringViewType module_name, bool is_primary) -> void
     {
         const FFilePath module_file_path = m_root_directory / module_name / fmt::format(STR("{}.Build.cs"), module_name);
         GeneratedFile module_build_file = GeneratedFile(module_file_path);
 
-        std::set<std::wstring_view> public_deps{};
-        public_deps.insert(m_forced_module_dependencies.begin(), m_forced_module_dependencies.end());
-        add_module_and_sub_module_dependencies(public_deps, module_name);
+        std::set<StringViewType> public_deps{};
+        for (auto const& module_name : m_forced_module_dependencies)
+        {
+            public_deps.insert(module_name);
+        }
+        add_module_and_sub_module_dependencies(public_deps, package);
 
         module_build_file.append_line(STR("using UnrealBuildTool;"));
         module_build_file.append_line();
@@ -495,7 +487,7 @@ namespace RC::UEGenerator
         module_build_file.end_indent_level();
         module_build_file.append_line(STR("});"));
 
-        std::vector<std::wstring_view> private_deps;
+        std::vector<StringViewType> private_deps;
         // TODO: better system for this
         if (public_deps.contains(STR("OnlineSubsystemUtils")))
         {
@@ -526,26 +518,26 @@ namespace RC::UEGenerator
         module_build_file.end_indent_level();
         module_build_file.append_line(STR("}"));
 
-        module_build_file.serialize_file_content_to_disk();
+        module_build_file.serialize_file_content_to_disk(*this);
     }
 
-    auto UEHeaderGenerator::generate_module_implementation_file(std::wstring_view module_name) -> void
+    auto UEHeaderGenerator::generate_module_implementation_file(UPackage* package, StringViewType module_name, bool is_primary) -> void
     {
-        const FFilePath module_file_path = m_root_directory / module_name / STR("Private") / fmt::format(STR("{}Module.cpp"), module_name);
-        GeneratedFile module_impl_file = GeneratedFile(module_file_path);
+        FFilePath module_file_path = m_root_directory / module_name / STR("Private") / fmt::format(STR("{}Module.cpp"), module_name);
+        GeneratedFile module_impl_file{std::move(module_file_path)};
 
         module_impl_file.append_line(STR("#include \"Modules/ModuleManager.h\""));
-        module_impl_file.append_line(STR(""));
-        if (module_name != m_primary_module_name)
+        module_impl_file.append_line();
+        if (is_primary)
         {
-            module_impl_file.append_line(fmt::format(STR("IMPLEMENT_MODULE(FDefaultGameModuleImpl, {});"), module_name));
+            module_impl_file.format_line(STR("IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {}, \"{}\");"), module_name, module_name);
         }
         else
         {
-            module_impl_file.append_line(fmt::format(STR("IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {}, \"{}\");"), module_name, module_name));
+            module_impl_file.format_line(STR("IMPLEMENT_MODULE(FDefaultGameModuleImpl, {});"), module_name);
         }
 
-        module_impl_file.serialize_file_content_to_disk();
+        module_impl_file.serialize_file_content_to_disk(*this);
     }
 
     auto UEHeaderGenerator::is_struct_blueprint_visible(UScriptStruct* ustruct) const -> bool
@@ -559,20 +551,20 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::generate_interface_definition(UClass* uclass, GeneratedSourceFile& header_data) -> void
     {
-        const std::wstring interface_class_native_name = get_native_class_name(uclass);
-        const std::wstring interface_flags_string = generate_interface_flags(uclass);
+        auto interface_class_native_name = get_native_class_name(uclass);
+        auto interface_flags_string = generate_interface_flags(uclass);
 
-        std::wstring maybe_api_name;
-        if ((uclass->GetClassFlags() & CLASS_RequiredAPI) != 0)
+        StringType maybe_api_name;
+        if (uclass->HasAnyClassFlags(CLASS_RequiredAPI))
         {
-            maybe_api_name.append(convert_module_name_to_api_name(header_data.get_header_module_name()));
-            maybe_api_name.append(STR(" "));
+            maybe_api_name = convert_module_name_to_api_name(get_module_name_for_package(header_data.get_package()));
+            maybe_api_name += ' ';
         }
 
-        UClass* super_class = uclass->GetSuperClass();
-        header_data.add_dependency_object(super_class, DependencyLevel::Include);
+        auto super_class = uclass->GetSuperClass();
+        header_data.add_dependency(super_class, DependencyLevel::Include);
 
-        std::wstring parent_interface_class_name = get_native_class_name(super_class);
+        StringType parent_interface_class_name = get_native_class_name(super_class);
 
         // Generate interface UCLASS declaration
         header_data.append_line(fmt::format(STR("UINTERFACE({})"), interface_flags_string));
@@ -583,11 +575,11 @@ namespace RC::UEGenerator
         header_data.end_indent_level();
 
         header_data.append_line(STR("};"));
-        header_data.append_line(STR(""));
+        header_data.append_line();
 
         // Generate interface real class declaration
-        const std::wstring interface_native_name = get_native_class_name(uclass, true);
-        const std::wstring parent_interface_name = get_native_class_name(super_class, true);
+        auto interface_native_name = get_native_class_name(uclass, true);
+        auto parent_interface_name = get_native_class_name(super_class, true);
 
         header_data.append_line(fmt::format(STR("class {}{} : public {} {{"), maybe_api_name, interface_native_name, parent_interface_name));
         header_data.begin_indent_level();
@@ -604,12 +596,12 @@ namespace RC::UEGenerator
             if (is_delegate_signature_function(function))
             {
                 generate_delegate_type_declaration(function, uclass, header_data);
-                NumDelegatesGenerated++;
+                ++NumDelegatesGenerated;
             }
         }
         if (NumDelegatesGenerated)
         {
-            header_data.append_line(STR(""));
+            header_data.append_line();
         }
 
         // Generate interface functions
@@ -664,7 +656,7 @@ namespace RC::UEGenerator
         std::wstring maybe_api_name;
         if ((uclass->GetClassFlags() & CLASS_RequiredAPI) != 0)
         {
-            maybe_api_name.append(convert_module_name_to_api_name(header_data.get_header_module_name()));
+            maybe_api_name.append(convert_module_name_to_api_name(get_module_name_for_package(header_data.get_package())));
             maybe_api_name.append(STR(" "));
         }
 
@@ -681,16 +673,16 @@ namespace RC::UEGenerator
 
         if (super_class)
         {
-            header_data.add_dependency_object(super_class, DependencyLevel::Include);
+            header_data.add_dependency(super_class, DependencyLevel::Include);
         }
 
         std::wstring interface_list_string;
         bool is_abstract = uclass->GetClassFlags() & CLASS_Abstract;
-        auto implemented_interfaces = uclass->GetInterfaces();
+        auto const& implemented_interfaces = uclass->GetInterfaces();
 
         for (const RC::Unreal::FImplementedInterface& uinterface : implemented_interfaces)
         {
-            header_data.add_dependency_object(uinterface.Class, DependencyLevel::Include);
+            header_data.add_dependency(uinterface.Class, DependencyLevel::Include);
             const std::wstring interface_name = get_native_class_name(uinterface.Class, true);
 
             interface_list_string.append(STR(", public "));
@@ -721,14 +713,14 @@ namespace RC::UEGenerator
         }
         if (NumDelegatesGenerated)
         {
-            header_data.append_line(STR(""));
+            header_data.append_line();
         }
 
         // Generate constructor
         append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
         CharType const* constructor_args = should_generate_fobjectinitializer_constructor(uclass) ? STR("const FObjectInitializer& ObjectInitializer") : STR("");
         header_data.append_line(fmt::format(STR("{}({});"), class_native_name, constructor_args));
-        header_data.append_line_no_indent(STR(""));
+        header_data.append_line();
 
         // Generate functions
         // we must do this *before* properties b/c UHT will only let properties shadow function parameters, not vice versa
@@ -756,13 +748,13 @@ namespace RC::UEGenerator
         {
             append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
             header_data.append_line(STR("virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;"));
-            header_data.append_line_no_indent(STR(""));
+            header_data.append_line();
         }
 
         // Generate overrides for all inherited virtual functions
         if (implemented_interfaces.Num() > 0)
         {
-            header_data.append_line_no_indent(STR(""));
+            header_data.append_line();
             header_data.append_line(STR("// Fix for true pure virtual functions not being implemented"));
         }
         for (const RC::Unreal::FImplementedInterface& uinterface : implemented_interfaces)
@@ -786,7 +778,7 @@ namespace RC::UEGenerator
                 {
                     static auto MovieSceneEvalTemplatePtr =
                             UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/MovieScene.MovieSceneEvalTemplatePtr"));
-                    header_data.add_dependency_object(MovieSceneEvalTemplatePtr, DependencyLevel::Include);
+                    header_data.add_dependency(MovieSceneEvalTemplatePtr, DependencyLevel::Include);
                     header_data.append_line(fmt::format(
                             STR("virtual FMovieSceneEvalTemplatePtr CreateTemplateForSection(const UMovieSceneSection& InSection) const override {}"),
                             generate_virtual_body(STR("CreateTemplateForSection"), STR("return {};"), is_abstract)));
@@ -796,7 +788,7 @@ namespace RC::UEGenerator
                 {
                     static auto AbilitySystemComponent =
                             UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/GameplayAbilities.AbilitySystemComponent"));
-                    header_data.add_dependency_object(AbilitySystemComponent, DependencyLevel::PreDeclaration);
+                    header_data.add_dependency(AbilitySystemComponent, DependencyLevel::PreDeclaration);
                     header_data.append_line(fmt::format(STR("virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override {}"),
                                                         generate_virtual_body(STR("GetAbilitySystemComponent"), STR("return nullptr;"), is_abstract)));
                 }
@@ -837,22 +829,22 @@ namespace RC::UEGenerator
         const std::wstring struct_native_name = get_native_struct_name(script_struct);
         const std::wstring struct_flags_string = generate_struct_flags(script_struct);
 
-        std::wstring api_macro_name = convert_module_name_to_api_name(header_data.get_header_module_name());
-        api_macro_name.append(STR(" "));
-        bool is_struct_exported = (script_struct->GetStructFlags() & STRUCT_RequiredAPI) != 0;
+        auto is_struct_exported = script_struct->HasAnyStructFlags(STRUCT_RequiredAPI);
+        StringType api_macro_name = convert_module_name_to_api_name(get_module_name_for_package(header_data.get_package()));
+        api_macro_name += ' ';
 
         UScriptStruct* super_struct = script_struct->GetSuperScriptStruct();
-        std::wstring parent_struct_declaration;
+        StringType parent_struct_declaration;
         if (super_struct)
         {
-            header_data.add_dependency_object(super_struct, DependencyLevel::Include);
+            header_data.add_dependency(super_struct, DependencyLevel::Include);
 
-            const std::wstring super_struct_native_name = get_native_struct_name(super_struct);
-            parent_struct_declaration.append(fmt::format(STR(" : public {}"), super_struct_native_name));
+            auto super_struct_native_name = get_native_struct_name(super_struct);
+            parent_struct_declaration = fmt::format(STR(" : public {}"), super_struct_native_name);
         }
 
-        header_data.append_line(fmt::format(STR("USTRUCT({})"), struct_flags_string));
-        header_data.append_line(fmt::format(STR("struct {}{}{} {{"), is_struct_exported ? api_macro_name : STR(""), struct_native_name, parent_struct_declaration));
+        header_data.format_line(STR("USTRUCT({})"), struct_flags_string);
+        header_data.format_line(STR("struct {}{}{} {{"), is_struct_exported ? api_macro_name : STR(""), struct_native_name, parent_struct_declaration);
         header_data.begin_indent_level();
 
         header_data.append_line(STR("GENERATED_BODY()"));
@@ -869,13 +861,33 @@ namespace RC::UEGenerator
 
         // Generate constructor and make sure it's public
         append_access_modifier(header_data, AccessModifier::Public, current_access_modifier);
-        header_data.append_line(fmt::format(STR("{}{}();"), !is_struct_exported ? api_macro_name : STR(""), struct_native_name));
+        header_data.format_line(STR("{}{}();"), !is_struct_exported ? api_macro_name : STR(""), struct_native_name);
 
         header_data.end_indent_level();
         header_data.append_line(STR("};"));
+
         if (m_structs_that_need_get_type_hash.contains(script_struct))
         {
-            generate_get_type_hash(script_struct, header_data);
+            header_data.format_line(STR("FORCEINLINE uint32 GetTypeHash(const {}&) {{ return 0; }}"), struct_native_name);
+            header_data.format_line(STR("FORCEINLINE bool operator==(const {}&, const {}&) {{ return true; }}"), struct_native_name, struct_native_name);
+        }
+        static FName NAME_TickFunction{STR("TickFunction")};
+        if (super_struct && super_struct->GetNamePrivate() == NAME_TickFunction)
+        {
+            // TODO: I don't really know what this was for; it was added to 2nd pass as a special case but never used any information from the first pass
+            header_data.append_line();
+            header_data.append_line(STR("template<>"));
+            header_data.format_line(STR("struct TStructOpsTypeTraits<{}> : public TStructOpsTypeTraitsBase2<{}>"), struct_native_name, struct_native_name);
+            header_data.append_line(STR("{"));
+            header_data.begin_indent_level();
+            header_data.append_line(STR("enum"));
+            header_data.append_line(STR("{"));
+            header_data.begin_indent_level();
+            header_data.append_line(STR("WithCopy = false"));
+            header_data.end_indent_level();
+            header_data.append_line(STR("};"));
+            header_data.end_indent_level();
+            header_data.append_line(STR("};"));
         }
     }
 
@@ -1076,20 +1088,20 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::generate_object_implementation(UClass* uclass, GeneratedSourceFile& implementation_file) -> void
     {
-        const std::wstring class_native_name = get_native_class_name(uclass);
+        auto class_native_name = get_native_class_name(uclass);
 
-        CharType const* constructor_content_string = STR("");
-        CharType const* constructor_postfix_string = STR("");
-        UClass* super_class = uclass->GetSuperClass();
-        const std::wstring native_parent_class_name = super_class ? get_native_class_name(super_class) : STR("UObjectBaseUtility");
+        auto constructor_args = STR("");
+        auto constructor_postfix_string = STR("");
+        auto super_class = uclass->GetSuperClass();
+        auto native_parent_class_name = super_class ? get_native_class_name(super_class) : STR("UObjectBaseUtility");
 
-        // Generate constructor implementation except for overrides.
+        // Generate constructor implementation
 
         // If class is a child of AActor we add the UObjectInitializer constructor.
         // This may not be required in all cases, but is necessary to override subcomponents and does not hurt anything.
         if (should_generate_fobjectinitializer_constructor(uclass))
         {
-            constructor_content_string = STR("const FObjectInitializer& ObjectInitializer");
+            constructor_args = STR("const FObjectInitializer& ObjectInitializer");
             constructor_postfix_string = STR(") : Super(ObjectInitializer");
         }
         // If parent class contains the UObjectInitializer constructor without default value,
@@ -1099,11 +1111,8 @@ namespace RC::UEGenerator
             constructor_postfix_string = STR(") : Super(FObjectInitializer::Get()");
         }
 
-        implementation_file.m_implementation_constructor.append(
-                fmt::format(STR("{}::{}({}{}"), class_native_name, class_native_name, constructor_content_string, constructor_postfix_string));
+        StringType constructor = fmt::format(STR("{}::{}({}{}"), class_native_name, class_native_name, constructor_args, constructor_postfix_string);
 
-        implementation_file.begin_indent_level();
-        
         // subobject management
         auto const& dsos = m_default_subobjects[uclass];
         DefaultSubobjects empty_dsos;
@@ -1112,7 +1121,7 @@ namespace RC::UEGenerator
         {
             if (!dso)
             {
-                fmt::format_to(std::back_inserter(implementation_file.m_implementation_constructor), STR(".DoNotCreateDefaultSubobject(TEXT(\"{}\"))"), dso_name.ToString());
+                fmt::format_to(std::back_inserter(constructor), STR(".DoNotCreateDefaultSubobject(TEXT(\"{}\"))"), dso_name.ToString());
                 continue;
             }
             auto dso_class = dso->GetClassPrivate();
@@ -1121,40 +1130,35 @@ namespace RC::UEGenerator
             {
                 auto id = implementation_file.gen_id();
                 implementation_file.dso_lookup.insert({dso, id});
-                implementation_file.add_dependency_object(dso_class, DependencyLevel::Include);
+                implementation_file.add_dependency(dso_class, DependencyLevel::Include);
                 implementation_file.format_line(STR("auto gen{} = CreateDefaultSubobject<{}>(TEXT(\"{}\"));"), id, get_native_class_name(dso_class), dso_name.ToString());
                 continue;
             }
             if (!super.first || dso_class != super.first->GetClassPrivate())
             {
-                implementation_file.add_dependency_object(dso_class, DependencyLevel::Include);
-                fmt::format_to(std::back_inserter(implementation_file.m_implementation_constructor), STR(".SetDefaultSubobjectClass<{}>(TEXT(\"{}\"))"), get_native_class_name(dso_class), dso_name.ToString());
+                implementation_file.add_dependency(dso_class, DependencyLevel::Include);
+                fmt::format_to(std::back_inserter(constructor), STR(".SetDefaultSubobjectClass<{}>(TEXT(\"{}\"))"), get_native_class_name(dso_class), dso_name.ToString());
             }
         }
+        constructor.append(STR(") {"));
+        implementation_file.append_line(constructor);
+        implementation_file.begin_indent_level();
 
         // Generate and initialize properties
-        UObject* cdo = uclass->GetClassDefaultObject();
+        auto cdo = uclass->GetClassDefaultObject();
         PropertyScope scope{};
-        if (cdo)
+        for (FProperty* property : uclass->ForEachProperty())
         {
-            for (FProperty* property : uclass->ForEachProperty())
-            {
-                generate_property_assignment_in_container(uclass, property, cdo, nullptr, implementation_file, scope, false);
-            }
-
-            UObject* super_cdo = super_class ? super_class->GetClassDefaultObject() : nullptr;
-            for (; super_class; super_class = super_class->GetSuperClass())
-            {
-                for (FProperty* property : super_class->ForEachProperty())
-                {
-                    generate_property_assignment_in_container(uclass, property, cdo, super_cdo, implementation_file, scope, false);
-                }
-            }
+            generate_property_assignment_in_container(uclass, property, cdo, nullptr, implementation_file, scope, false);
         }
-        else
+
+        auto super_cdo = super_class ? super_class->GetClassDefaultObject() : nullptr;
+        for (; super_class; super_class = super_class->GetSuperClass())
         {
-            Output::send<LogLevel::Error>(STR("CDO is NULL for %s\n"), uclass->GetFullName());
-            implementation_file.append_line(STR("// Null default object."));
+            for (FProperty* property : super_class->ForEachProperty())
+            {
+                generate_property_assignment_in_container(uclass, property, cdo, super_cdo, implementation_file, scope, false);
+            }
         }
         m_class_subobjects.clear();
 
@@ -1184,10 +1188,6 @@ namespace RC::UEGenerator
         implementation_file.append_line(STR("}"));
         implementation_file.append_line();
 
-        // Finalize constructor.  We do this after the property generation because we need information from the properties
-        // to determine the required overrides within the constructor.
-        implementation_file.m_implementation_constructor.append(STR(") {"));
-
         CaseInsensitiveSet blacklisted_parameter_names{};
 
         // Generate functions
@@ -1196,7 +1196,7 @@ namespace RC::UEGenerator
             if (!is_delegate_signature_function(function))
             {
                 generate_function_implementation(uclass, function, implementation_file, false, blacklisted_parameter_names);
-                implementation_file.append_line(STR(""));
+                implementation_file.append_line();
             }
         }
 
@@ -1217,7 +1217,7 @@ namespace RC::UEGenerator
             implementation_file.begin_indent_level();
 
             implementation_file.append_line(STR("Super::GetLifetimeReplicatedProps(OutLifetimeProps);"));
-            implementation_file.append_line(STR(""));
+            implementation_file.append_line();
 
             for (FProperty* property : uclass->ForEachProperty())
             {
@@ -1229,27 +1229,27 @@ namespace RC::UEGenerator
 
             implementation_file.end_indent_level();
             implementation_file.append_line(STR("}"));
-            implementation_file.append_line(STR(""));
+            implementation_file.append_line();
         }
     }
 
     auto UEHeaderGenerator::generate_struct_implementation(UScriptStruct* this_struct, GeneratedSourceFile& implementation_file) -> void
     {
-        const std::wstring struct_native_name = get_native_struct_name(this_struct);
+        auto struct_native_name = get_native_struct_name(this_struct);
 
         // Generate constructor implementation and initialize properties inside
-        implementation_file.m_implementation_constructor.append(fmt::format(STR("{}::{}() {{"), struct_native_name, struct_native_name));
+        implementation_file.format_line(STR("{}::{}() {{"), struct_native_name, struct_native_name);
         implementation_file.begin_indent_level();
 
         // Generate properties
         PropertyScope scope{};
-        void const* struct_defaults = get_default_object(this_struct);
+        auto struct_defaults = get_default_object(this_struct);
         for (FProperty* property : this_struct->ForEachProperty())
         {
             generate_property_assignment_in_container(this_struct, property, struct_defaults, nullptr, implementation_file, scope, true);
         }
-        UStruct* super = this_struct->GetSuperStruct();
-        void const* super_defaults = super ? get_default_object(super) : nullptr;
+        auto super = this_struct->GetSuperStruct();
+        auto super_defaults = super ? get_default_object(super) : nullptr;
         for (; super; super = super->GetSuperStruct())
         {
             for (FProperty* property : super->ForEachProperty())
@@ -1260,13 +1260,6 @@ namespace RC::UEGenerator
 
         implementation_file.end_indent_level();
         implementation_file.append_line(STR("}"));
-    }
-
-    auto UEHeaderGenerator::generate_get_type_hash(UScriptStruct* ustruct, GeneratedSourceFile& header_file) -> void
-    {
-        auto name = get_native_struct_name(ustruct);
-        header_file.format_line(STR("FORCEINLINE uint32 GetTypeHash(const {}&) {{ return 0; }}"), name);
-        header_file.format_line(STR("FORCEINLINE bool operator==(const {}&, const {}&) {{ return true; }}"), name, name);
     }
 
     auto UEHeaderGenerator::generate_property(UStruct* ustruct, FProperty* property, GeneratedSourceFile& header_data) -> void
@@ -1289,7 +1282,7 @@ namespace RC::UEGenerator
             header_data.append_line(fmt::format(STR("// UPROPERTY({})"), property_flags));
             header_data.append_line(fmt::format(STR("// Missed Property: {}"), property->GetName()));
             header_data.append_line(fmt::format(STR("// {}"), error_string));
-            header_data.append_line(STR(""));
+            header_data.append_line();
             return;
         }
 
@@ -1307,7 +1300,7 @@ namespace RC::UEGenerator
 
         header_data.append_line(fmt::format(STR("UPROPERTY({})"), property_flags));
         header_data.append_line(property_decl);
-        header_data.append_line(STR(""));
+        header_data.append_line();
     }
 
     // TODO FUNC_Final is not properly handled (should be always set except some weird cases)
@@ -1381,7 +1374,7 @@ namespace RC::UEGenerator
                                             function->GetName(),
                                             function_argument_list,
                                             function_extra_postfix_string));
-        header_data.append_line(STR(""));
+        header_data.append_line();
     }
 
     static FProperty* get_property_by_fname_in_chain(UStruct* ustruct, FName name)
@@ -1398,10 +1391,6 @@ namespace RC::UEGenerator
         }
         return nullptr;
     }
-    auto GeneratedSourceFile::gen_id() -> uint32_t
-    {
-        return m_gen_id++;
-    }
     auto UEHeaderGenerator::needs_advanced_access(UStruct* this_struct, FProperty* prop) -> bool
     {
         bool is_private = prop->GetPropertyFlags() & CPF_NativeAccessSpecifierPrivate;
@@ -1412,8 +1401,6 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::is_default_value(FProperty* property, void const* data, void const* archetype_data)
         -> bool
     {
-        return property->Identical(data, archetype_data);
-        /*
         if (archetype_data)
         {
             return property->Identical(data, archetype_data);
@@ -1460,14 +1447,13 @@ namespace RC::UEGenerator
             Output::send<LogLevel::Warning>(STR("Incorrectly implemented is_default_value for {} (non-zero constructor)\n"), property->GetFullName());
             return false;
         }
-        char default_value[16] = {};
+        char alignas(8) default_value[40] = {}; // FSoftObjectPtr
         if (sizeof(default_value) < property->GetElementSize())
         {
             Output::send<LogLevel::Warning>(STR("Buffer insufficient in is_default_value for {} (size = {})\n"), property->GetFullName(), property->GetElementSize());
             return false;
         }
         return property->Identical(data, default_value);
-        */
     }
     auto UEHeaderGenerator::get_default_object(UStruct* ustruct) -> void const*
     {
@@ -1497,7 +1483,7 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::generate_enum_value(UEnum* uenum, int64_t enum_value, GeneratedSourceFile& implementation_file) -> std::wstring
     {
-        implementation_file.add_dependency_object(uenum, DependencyLevel::Include);
+        implementation_file.add_dependency(uenum, DependencyLevel::Include);
 
         UEnum::ECppForm cpp_form = uenum->GetCppForm();
         const std::wstring enum_native_name = get_native_enum_name(uenum, false);
@@ -1545,23 +1531,10 @@ namespace RC::UEGenerator
                 uclass = uclass->GetSuperClass();
             }
             auto class_name = get_native_class_name(uclass);
-            implementation_file.add_dependency_object(uclass, DependencyLevel::Include);
+            implementation_file.add_dependency(uclass, DependencyLevel::Include);
             implementation_file.format_line(STR("auto gen{} = Cast<{}>(GetDefaultSubobjectByName(TEXT(\"{}\")));"), id, class_name, object->GetName());
         }
         return fmt::format(STR("gen{}"), id);
-    }
-
-    auto UEHeaderGenerator::generate_assignment_expression(UStruct* this_struct,
-                                                           FProperty* property,
-                                                           int32_t index,
-                                                           std::wstring_view value,
-                                                           GeneratedSourceFile& implementation_file,
-                                                           PropertyScope& property_scope,
-                                                           std::wstring_view operator_type) -> void
-    {
-        property_scope.push(property, index);
-        implementation_file.append_line(fmt::format(STR("{}{}{};"), property_scope.access(this_struct, implementation_file), operator_type, value));
-        property_scope.pop();
     }
 
     auto UEHeaderGenerator::generate_soft_path(std::wstring_view kind, FSoftObjectPath const& value) -> std::wstring
@@ -1572,7 +1545,7 @@ namespace RC::UEGenerator
     }
     auto UEHeaderGenerator::generate_object_finder(UClass* class_, std::wstring_view path_name, GeneratedSourceFile& implementation_file, bool is_class) -> std::wstring
     {
-        implementation_file.add_dependency_object(class_, DependencyLevel::Include);
+        implementation_file.add_dependency(class_, DependencyLevel::Include);
         auto finder_id = implementation_file.gen_id();
         // XXX: shouldn't really be optional
         // TODO: class should generate FClassFinder
@@ -1889,19 +1862,19 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::convert_module_name_to_api_name(std::wstring module_name) -> std::wstring
     {
-        std::wstring uppercase_string = string_to_uppercase(module_name);
+        std::wstring uppercase_string = string_to_uppercase(std::move(module_name));
         uppercase_string.append(STR("_API"));
         return uppercase_string;
     }
 
-    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<std::wstring_view>& out_module_dependencies, std::wstring const& module_name) -> void
+    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<StringViewType>& out_module_dependencies, UPackage* package) -> void
     {
-        const auto iterator = m_module_dependencies.find(module_name);
+        if (!package) return;
+        const auto iterator = m_module_dependencies.find(package);
         if (iterator == m_module_dependencies.end()) return;
-
-        for (auto const& dependency_module_name : iterator->second)
+        for (auto dep : iterator->second)
         {
-            out_module_dependencies.insert(dependency_module_name);
+            out_module_dependencies.insert(get_module_name_for_package(dep));
         }
     }
 
@@ -2160,7 +2133,7 @@ namespace RC::UEGenerator
             {
                 if (context.source_file)
                 {
-                    context.source_file->add_dependency_object(enum_value, DependencyLevel::Include);
+                    context.source_file->add_dependency(enum_value, DependencyLevel::Include);
                 }
                 auto enum_name = get_native_enum_name(enum_value);
                 // Non-EnumClass enumerations should be wrapped into TEnumAsByte according to UHT, but implicit uint8s should not use TEnumAsByte
@@ -2174,7 +2147,7 @@ namespace RC::UEGenerator
             UEnum* uenum = prop->GetEnum();
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(uenum, DependencyLevel::Include);
+                context.source_file->add_dependency(uenum, DependencyLevel::Include);
             }
             return get_native_enum_name(uenum);
         }
@@ -2238,7 +2211,7 @@ namespace RC::UEGenerator
             if (context.source_file)
             {
                 // the template calls a member function, so we need full inclusion
-                context.source_file->add_dependency_object(metaclass, DependencyLevel::Include);
+                context.source_file->add_dependency(metaclass, DependencyLevel::Include);
                 context.source_file->add_extra_include(STR("Templates/SubclassOf.h"));
             }
             auto metaclass_name = get_native_class_name(metaclass);
@@ -2258,7 +2231,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(metaclass, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(metaclass, DependencyLevel::PreDeclaration);
             }
             auto metaclass_name = get_native_class_name(metaclass);
             return fmt::format(STR("TSoftClassPtr<{}>"), metaclass_name);
@@ -2276,7 +2249,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(property_class, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
             }
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("{}*"), property_class_name);
@@ -2291,7 +2264,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(property_class, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
             }
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TObjectPtr<{}>"), property_class_name);
@@ -2305,7 +2278,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(property_class, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
             }
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TWeakObjectPtr<{}>"), property_class_name);
@@ -2319,7 +2292,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(property_class, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
             }
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TLazyObjectPtr<{}>"), property_class_name);
@@ -2333,7 +2306,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(property_class, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
             }
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TSoftObjectPtr<{}>"), property_class_name);
@@ -2347,7 +2320,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(interface_class, DependencyLevel::PreDeclaration);
+                context.source_file->add_dependency(interface_class, DependencyLevel::PreDeclaration);
             }
             const std::wstring interface_class_name = get_native_class_name(interface_class, true);
 
@@ -2358,7 +2331,7 @@ namespace RC::UEGenerator
             auto script_struct = prop->GetStruct();
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(script_struct, DependencyLevel::Include);
+                context.source_file->add_dependency(script_struct, DependencyLevel::Include);
             }
             return get_native_struct_name(script_struct);
         }
@@ -2372,7 +2345,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(signature_func, DependencyLevel::Include);
+                context.source_file->add_dependency(signature_func, DependencyLevel::Include);
             }
             return get_native_delegate_type_name(signature_func, current_class);
         }
@@ -2387,7 +2360,7 @@ namespace RC::UEGenerator
             }
             if (context.source_file)
             {
-                context.source_file->add_dependency_object(signature_func, DependencyLevel::Include);
+                context.source_file->add_dependency(signature_func, DependencyLevel::Include);
             }
             return get_native_delegate_type_name(signature_func, current_class);
         }
@@ -2954,8 +2927,8 @@ namespace RC::UEGenerator
             {
                 std::wstring param_declaration;
 
-                // We only generate UPARAM declarations if we are not generating the implementation file
-                if (!header_data.is_implementation_file())
+                // We only generate UPARAM declarations if we are generating the header
+                if (header_data.is_header())
                 {
                     const std::wstring parameter_flags_string = generate_function_argument_flags(property);
                     if (!parameter_flags_string.empty())
@@ -3067,7 +3040,7 @@ namespace RC::UEGenerator
     {
         if (value->HasAnyClassFlags(CLASS_Native))
         {
-            implementation_file.add_dependency_object(value, DependencyLevel::Include);
+            implementation_file.add_dependency(value, DependencyLevel::Include);
             return fmt::format(STR("{}::StaticClass()"), get_native_class_name(value));
         }
         return generate_object_finder(metaclass, value->GetPathName(), implementation_file, true);
@@ -3076,7 +3049,7 @@ namespace RC::UEGenerator
     {
         if (value->HasAnyStructFlags(STRUCT_Native))
         {
-            implementation_file.add_dependency_object(value, DependencyLevel::Include);
+            implementation_file.add_dependency(value, DependencyLevel::Include);
             return fmt::format(STR("TBaseStructure<{}>::Get()"), get_native_struct_name(value));
         }
         Output::send<LogLevel::Error>(STR("Unimplemented struct (non-native) {}\n"), value->GetFullName());
@@ -3244,12 +3217,12 @@ namespace RC::UEGenerator
             auto arch_data = get_default_object(script_struct);
             if (is_default_value(property, data, arch_data))
             {
-                return std::format(STR("{}{{}}"), native_name);
+                return fmt::format(STR("{}{{}}"), native_name);
             }
 
-            implementation_file.add_dependency_object(script_struct, DependencyLevel::Include);
+            implementation_file.add_dependency(script_struct, DependencyLevel::Include);
             auto id = implementation_file.gen_id();
-            auto root = std::format(STR("gen{}"), id);
+            auto root = fmt::format(STR("gen{}"), id);
             implementation_file.format_line(STR("{} {};"), native_name, root);
             PropertyScope property_scope{root};
             for (auto st = script_struct; st; st = st->GetSuperScriptStruct())
@@ -3259,7 +3232,7 @@ namespace RC::UEGenerator
                     generate_property_assignment_in_container(this_struct, child_prop, data, arch_data, implementation_file, property_scope, true);
                 }
             }
-            return std::format(STR("MoveTemp({})"), root);
+            return fmt::format(STR("MoveTemp({})"), root);
         }
         if (auto prop = CastField<FArrayProperty>(property))
         {
@@ -3447,19 +3420,23 @@ namespace RC::UEGenerator
         return blueprint_info;
     }
 
-    auto UEHeaderGenerator::get_module_name_for_package(UObject* package) -> std::wstring
+    auto UEHeaderGenerator::is_script_package(UPackage* package) -> bool
     {
-        if (package->GetOuterPrivate() != NULL)
-        {
-            throw std::invalid_argument("Encountered a package with an outer object set");
-        }
-        std::wstring package_name = package->GetName();
-        if (!package_name.starts_with(STR("/Script/")))
-        {
-            return STR("");
-        }
+        StringType package_name = package->GetName();
+        return package_name.starts_with(STR("/Script/"));
+    }
+    auto UEHeaderGenerator::get_module_name_for_package(UPackage* package) -> StringType
+    {
+        assert(!package->GetOuterPrivate());
+        StringType package_name = package->GetName();
+        assert(package_name.starts_with(STR("/Script/")));
         package_name.erase(0, wcslen(STR("/Script/")));
         return package_name;
+    }
+    auto UEHeaderGenerator::get_package_name_for_module(StringType out) -> StringType
+    {
+        out.insert(0, STR("/Script/"));
+        return out;
     }
 
     PropertyListView::PropertyListView(SettingsManager::PropertyList const& list)
@@ -3510,14 +3487,25 @@ namespace RC::UEGenerator
     {
         m_root_directory = root_directory;
         m_primary_module_name = determine_primary_game_module_name();
+        m_primary_module = find_module(m_primary_module_name);
 
         // Force inclusion of Core and CoreUObject into all the generated module build files
-        m_forced_module_dependencies.insert(STR("Core"));
-        m_forced_module_dependencies.insert(STR("CoreUObject"));
+        m_forced_module_dependencies.push_back(STR("Core"));
+        m_forced_module_dependencies.push_back(STR("CoreUObject"));
         // TODO not optimal, but still needed for the majority of the cases
-        m_forced_module_dependencies.insert(STR("Engine"));
+        m_forced_module_dependencies.push_back(STR("Engine"));
     }
 
+    auto UEHeaderGenerator::find_module(StringType name) -> UPackage*
+    {
+        auto package_name = get_package_name_for_module(name);
+        return UObjectGlobals::StaticFindObject<UPackage*>(nullptr, nullptr, package_name);
+    }
+    auto UEHeaderGenerator::ignore_module(StringType name) -> void
+    {
+        auto package = find_module(name);
+        if (package) m_ignored_modules.insert(package);
+    }
     auto UEHeaderGenerator::ignore_selected_modules() -> void
     {
         // Never generate CoreUObject, since it contains a lot of intrinsic classes and is generally always the same
@@ -3527,151 +3515,150 @@ namespace RC::UEGenerator
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreEngineAndCoreUObject ||
             UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreAllCoreEngineModules)
         {
-            m_ignored_module_names.insert(STR("Engine"));
-            m_ignored_module_names.insert(STR("CoreUObject"));
+            ignore_module(STR("Engine"));
+            ignore_module(STR("CoreUObject"));
         }
 
         // Skip all core engine packages if requested
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.IgnoreAllCoreEngineModules)
         {
-            m_ignored_module_names.insert(STR("ActorLayerUtilities"));
-            m_ignored_module_names.insert(STR("ActorSequence"));
-            m_ignored_module_names.insert(STR("AIModule"));
-            m_ignored_module_names.insert(STR("AndroidPermission"));
-            m_ignored_module_names.insert(STR("AnimationCore"));
-            m_ignored_module_names.insert(STR("AnimationSharing"));
-            m_ignored_module_names.insert(STR("AnimGraphRuntime"));
-            m_ignored_module_names.insert(STR("AppleImageUtils"));
-            m_ignored_module_names.insert(STR("ArchVisCharacter"));
-            m_ignored_module_names.insert(STR("AssetRegistry"));
-            m_ignored_module_names.insert(STR("AssetTags"));
-            m_ignored_module_names.insert(STR("AudioAnalyzer"));
-            m_ignored_module_names.insert(STR("AudioCapture"));
-            m_ignored_module_names.insert(STR("AudioExtensions"));
-            m_ignored_module_names.insert(STR("AudioMixer"));
-            m_ignored_module_names.insert(STR("AudioPlatformConfiguration"));
-            m_ignored_module_names.insert(STR("AudioSynesthesia"));
-            m_ignored_module_names.insert(STR("AugmentedReality"));
-            m_ignored_module_names.insert(STR("AutomationUtils"));
-            m_ignored_module_names.insert(STR("AvfMediaFactory"));
-            m_ignored_module_names.insert(STR("BuildPatchServices"));
-            m_ignored_module_names.insert(STR("CableComponent"));
-            m_ignored_module_names.insert(STR("Chaos"));
-            m_ignored_module_names.insert(STR("ChaosCloth"));
-            m_ignored_module_names.insert(STR("ChaosNiagara"));
-            m_ignored_module_names.insert(STR("ChaosSolvers"));
-            m_ignored_module_names.insert(STR("ChaosSolverEngine"));
-            m_ignored_module_names.insert(STR("CinematicCamera"));
-            m_ignored_module_names.insert(STR("ClothingSystemRuntimeCommon"));
-            m_ignored_module_names.insert(STR("ClothingSystemRuntimeInterface"));
-            m_ignored_module_names.insert(STR("ClothingSystemRuntimeNv"));
-            m_ignored_module_names.insert(STR("CustomMeshComponent"));
-            m_ignored_module_names.insert(STR("DatasmithContent"));
-            m_ignored_module_names.insert(STR("DeveloperSettings"));
-            m_ignored_module_names.insert(STR("EditableMesh"));
-            m_ignored_module_names.insert(STR("EngineMessages"));
-            m_ignored_module_names.insert(STR("EngineSettings"));
-            m_ignored_module_names.insert(STR("EyeTracker"));
-            m_ignored_module_names.insert(STR("FacialAnimation"));
-            m_ignored_module_names.insert(STR("FieldSystemCore"));
-            m_ignored_module_names.insert(STR("FieldSystemEngine"));
-            m_ignored_module_names.insert(STR("Foliage"));
-            m_ignored_module_names.insert(STR("GameplayTags"));
-            m_ignored_module_names.insert(STR("GameplayTasks"));
-            m_ignored_module_names.insert(STR("GeometryCache"));
-            m_ignored_module_names.insert(STR("GeometryCacheTracks"));
-            m_ignored_module_names.insert(STR("GeometryCollectionCore"));
-            m_ignored_module_names.insert(STR("GeometryCollectionSimulationCore"));
-            m_ignored_module_names.insert(STR("GeometryCollectionEngine"));
-            m_ignored_module_names.insert(STR("GeometryCollectionTracks"));
-            m_ignored_module_names.insert(STR("GooglePAD"));
-            m_ignored_module_names.insert(STR("HeadMountedDisplay"));
-            m_ignored_module_names.insert(STR("ImageWrapper"));
-            m_ignored_module_names.insert(STR("ImageWriteQueue"));
-            m_ignored_module_names.insert(STR("ImgMedia"));
-            m_ignored_module_names.insert(STR("ImgMediaFactory"));
-            m_ignored_module_names.insert(STR("InputCore"));
-            m_ignored_module_names.insert(STR("InteractiveToolsFramework"));
-            m_ignored_module_names.insert(STR("JsonUtilities"));
-            m_ignored_module_names.insert(STR("Landscape"));
-            m_ignored_module_names.insert(STR("LevelSequence"));
-            m_ignored_module_names.insert(STR("LightPropagationVolumeRuntime"));
-            m_ignored_module_names.insert(STR("LiveLinkInterface"));
-            m_ignored_module_names.insert(STR("LocationServicesBPLibrary"));
-            m_ignored_module_names.insert(STR("LuminRuntimeSettings"));
-            m_ignored_module_names.insert(STR("MagicLeap"));
-            m_ignored_module_names.insert(STR("MagicLeapAR"));
-            m_ignored_module_names.insert(STR("MagicLeapARPin"));
-            m_ignored_module_names.insert(STR("MagicLeapAudio"));
-            m_ignored_module_names.insert(STR("MagicLeapController"));
-            m_ignored_module_names.insert(STR("MagicLeapEyeTracker"));
-            m_ignored_module_names.insert(STR("MagicLeapHandMeshing"));
-            m_ignored_module_names.insert(STR("MagicLeapHandTracking"));
-            m_ignored_module_names.insert(STR("MagicLeapIdentity"));
-            m_ignored_module_names.insert(STR("MagicLeapImageTracker"));
-            m_ignored_module_names.insert(STR("MagicLeapLightEstimation"));
-            m_ignored_module_names.insert(STR("MagicLeapPlanes"));
-            m_ignored_module_names.insert(STR("MagicLeapPrivileges"));
-            m_ignored_module_names.insert(STR("MagicLeapSecureStorage"));
-            m_ignored_module_names.insert(STR("MagicLeapSharedWorld"));
-            m_ignored_module_names.insert(STR("MaterialShaderQualitySettings"));
-            m_ignored_module_names.insert(STR("MediaAssets"));
-            m_ignored_module_names.insert(STR("MediaCompositing"));
-            m_ignored_module_names.insert(STR("MediaUtils"));
-            m_ignored_module_names.insert(STR("MeshDescription"));
-            m_ignored_module_names.insert(STR("MobilePatchingUtils"));
-            m_ignored_module_names.insert(STR("MotoSynth"));
-            m_ignored_module_names.insert(STR("MoviePlayer"));
-            m_ignored_module_names.insert(STR("MovieScene"));
-            m_ignored_module_names.insert(STR("MovieSceneCapture"));
-            m_ignored_module_names.insert(STR("MovieSceneTracks"));
-            m_ignored_module_names.insert(STR("MRMesh"));
-            m_ignored_module_names.insert(STR("NavigationSystem"));
-            m_ignored_module_names.insert(STR("NetCore"));
-            m_ignored_module_names.insert(STR("Niagara"));
-            m_ignored_module_names.insert(STR("NiagaraAnimNotifies"));
-            m_ignored_module_names.insert(STR("NiagaraCore"));
-            m_ignored_module_names.insert(STR("NiagaraShader"));
-            m_ignored_module_names.insert(STR("OculusHMD"));
-            m_ignored_module_names.insert(STR("OculusInput"));
-            m_ignored_module_names.insert(STR("OculusMR"));
-            m_ignored_module_names.insert(STR("OnlineSubsystem"));
-            m_ignored_module_names.insert(STR("OnlineSubsystemUtils"));
-            m_ignored_module_names.insert(STR("Overlay"));
-            m_ignored_module_names.insert(STR("PacketHandler"));
-            m_ignored_module_names.insert(STR("Paper2D"));
-            m_ignored_module_names.insert(STR("PhysicsCore"));
-            m_ignored_module_names.insert(STR("PhysXVehicles"));
-            m_ignored_module_names.insert(STR("ProceduralMeshComponent"));
-            m_ignored_module_names.insert(STR("PropertyAccess"));
-            m_ignored_module_names.insert(STR("PropertyPath"));
-            m_ignored_module_names.insert(STR("Renderer"));
-            m_ignored_module_names.insert(STR("Serialization"));
-            m_ignored_module_names.insert(STR("SessionMessages"));
-            m_ignored_module_names.insert(STR("SignificanceManager"));
-            m_ignored_module_names.insert(STR("Slate"));
-            m_ignored_module_names.insert(STR("SlateCore"));
-            m_ignored_module_names.insert(STR("SoundFields"));
-            m_ignored_module_names.insert(STR("StaticMeshDescription"));
-            m_ignored_module_names.insert(STR("SteamVR"));
-            m_ignored_module_names.insert(STR("SteamVRInputDevice"));
-            m_ignored_module_names.insert(STR("Synthesis"));
-            m_ignored_module_names.insert(STR("TcpMessaging"));
-            m_ignored_module_names.insert(STR("TemplateSequence"));
-            m_ignored_module_names.insert(STR("TimeManagement"));
-            m_ignored_module_names.insert(STR("UdpMessaging"));
-            m_ignored_module_names.insert(STR("UMG"));
-            m_ignored_module_names.insert(STR("UObjectPlugin"));
-            m_ignored_module_names.insert(STR("VariantManagerContent"));
-            m_ignored_module_names.insert(STR("VectorVM"));
-            m_ignored_module_names.insert(STR("WmfMediaFactory"));
+            ignore_module(STR("ActorLayerUtilities"));
+            ignore_module(STR("ActorSequence"));
+            ignore_module(STR("AIModule"));
+            ignore_module(STR("AndroidPermission"));
+            ignore_module(STR("AnimationCore"));
+            ignore_module(STR("AnimationSharing"));
+            ignore_module(STR("AnimGraphRuntime"));
+            ignore_module(STR("AppleImageUtils"));
+            ignore_module(STR("ArchVisCharacter"));
+            ignore_module(STR("AssetRegistry"));
+            ignore_module(STR("AssetTags"));
+            ignore_module(STR("AudioAnalyzer"));
+            ignore_module(STR("AudioCapture"));
+            ignore_module(STR("AudioExtensions"));
+            ignore_module(STR("AudioMixer"));
+            ignore_module(STR("AudioPlatformConfiguration"));
+            ignore_module(STR("AudioSynesthesia"));
+            ignore_module(STR("AugmentedReality"));
+            ignore_module(STR("AutomationUtils"));
+            ignore_module(STR("AvfMediaFactory"));
+            ignore_module(STR("BuildPatchServices"));
+            ignore_module(STR("CableComponent"));
+            ignore_module(STR("Chaos"));
+            ignore_module(STR("ChaosCloth"));
+            ignore_module(STR("ChaosNiagara"));
+            ignore_module(STR("ChaosSolvers"));
+            ignore_module(STR("ChaosSolverEngine"));
+            ignore_module(STR("CinematicCamera"));
+            ignore_module(STR("ClothingSystemRuntimeCommon"));
+            ignore_module(STR("ClothingSystemRuntimeInterface"));
+            ignore_module(STR("ClothingSystemRuntimeNv"));
+            ignore_module(STR("CustomMeshComponent"));
+            ignore_module(STR("DatasmithContent"));
+            ignore_module(STR("DeveloperSettings"));
+            ignore_module(STR("EditableMesh"));
+            ignore_module(STR("EngineMessages"));
+            ignore_module(STR("EngineSettings"));
+            ignore_module(STR("EyeTracker"));
+            ignore_module(STR("FacialAnimation"));
+            ignore_module(STR("FieldSystemCore"));
+            ignore_module(STR("FieldSystemEngine"));
+            ignore_module(STR("Foliage"));
+            ignore_module(STR("GameplayTags"));
+            ignore_module(STR("GameplayTasks"));
+            ignore_module(STR("GeometryCache"));
+            ignore_module(STR("GeometryCacheTracks"));
+            ignore_module(STR("GeometryCollectionCore"));
+            ignore_module(STR("GeometryCollectionSimulationCore"));
+            ignore_module(STR("GeometryCollectionEngine"));
+            ignore_module(STR("GeometryCollectionTracks"));
+            ignore_module(STR("GooglePAD"));
+            ignore_module(STR("HeadMountedDisplay"));
+            ignore_module(STR("ImageWrapper"));
+            ignore_module(STR("ImageWriteQueue"));
+            ignore_module(STR("ImgMedia"));
+            ignore_module(STR("ImgMediaFactory"));
+            ignore_module(STR("InputCore"));
+            ignore_module(STR("InteractiveToolsFramework"));
+            ignore_module(STR("JsonUtilities"));
+            ignore_module(STR("Landscape"));
+            ignore_module(STR("LevelSequence"));
+            ignore_module(STR("LightPropagationVolumeRuntime"));
+            ignore_module(STR("LiveLinkInterface"));
+            ignore_module(STR("LocationServicesBPLibrary"));
+            ignore_module(STR("LuminRuntimeSettings"));
+            ignore_module(STR("MagicLeap"));
+            ignore_module(STR("MagicLeapAR"));
+            ignore_module(STR("MagicLeapARPin"));
+            ignore_module(STR("MagicLeapAudio"));
+            ignore_module(STR("MagicLeapController"));
+            ignore_module(STR("MagicLeapEyeTracker"));
+            ignore_module(STR("MagicLeapHandMeshing"));
+            ignore_module(STR("MagicLeapHandTracking"));
+            ignore_module(STR("MagicLeapIdentity"));
+            ignore_module(STR("MagicLeapImageTracker"));
+            ignore_module(STR("MagicLeapLightEstimation"));
+            ignore_module(STR("MagicLeapPlanes"));
+            ignore_module(STR("MagicLeapPrivileges"));
+            ignore_module(STR("MagicLeapSecureStorage"));
+            ignore_module(STR("MagicLeapSharedWorld"));
+            ignore_module(STR("MaterialShaderQualitySettings"));
+            ignore_module(STR("MediaAssets"));
+            ignore_module(STR("MediaCompositing"));
+            ignore_module(STR("MediaUtils"));
+            ignore_module(STR("MeshDescription"));
+            ignore_module(STR("MobilePatchingUtils"));
+            ignore_module(STR("MotoSynth"));
+            ignore_module(STR("MoviePlayer"));
+            ignore_module(STR("MovieScene"));
+            ignore_module(STR("MovieSceneCapture"));
+            ignore_module(STR("MovieSceneTracks"));
+            ignore_module(STR("MRMesh"));
+            ignore_module(STR("NavigationSystem"));
+            ignore_module(STR("NetCore"));
+            ignore_module(STR("Niagara"));
+            ignore_module(STR("NiagaraAnimNotifies"));
+            ignore_module(STR("NiagaraCore"));
+            ignore_module(STR("NiagaraShader"));
+            ignore_module(STR("OculusHMD"));
+            ignore_module(STR("OculusInput"));
+            ignore_module(STR("OculusMR"));
+            ignore_module(STR("OnlineSubsystem"));
+            ignore_module(STR("OnlineSubsystemUtils"));
+            ignore_module(STR("Overlay"));
+            ignore_module(STR("PacketHandler"));
+            ignore_module(STR("Paper2D"));
+            ignore_module(STR("PhysicsCore"));
+            ignore_module(STR("PhysXVehicles"));
+            ignore_module(STR("ProceduralMeshComponent"));
+            ignore_module(STR("PropertyAccess"));
+            ignore_module(STR("PropertyPath"));
+            ignore_module(STR("Renderer"));
+            ignore_module(STR("Serialization"));
+            ignore_module(STR("SessionMessages"));
+            ignore_module(STR("SignificanceManager"));
+            ignore_module(STR("Slate"));
+            ignore_module(STR("SlateCore"));
+            ignore_module(STR("SoundFields"));
+            ignore_module(STR("StaticMeshDescription"));
+            ignore_module(STR("SteamVR"));
+            ignore_module(STR("SteamVRInputDevice"));
+            ignore_module(STR("Synthesis"));
+            ignore_module(STR("TcpMessaging"));
+            ignore_module(STR("TemplateSequence"));
+            ignore_module(STR("TimeManagement"));
+            ignore_module(STR("UdpMessaging"));
+            ignore_module(STR("UMG"));
+            ignore_module(STR("UObjectPlugin"));
+            ignore_module(STR("VariantManagerContent"));
+            ignore_module(STR("VectorVM"));
+            ignore_module(STR("WmfMediaFactory"));
         }
     }
 
     auto UEHeaderGenerator::dump_native_packages() -> void
     {
         ignore_selected_modules();
-        m_module_dependencies.insert({m_primary_module_name, {}});
 
         if (UE4SSProgram::settings_manager.UHTHeaderGenerator.MakeAllConfigsEngineConfig)
         {
@@ -3693,46 +3680,39 @@ namespace RC::UEGenerator
 
         Output::send(STR("Gathering native objects for dumping\n"));
         UObjectGlobals::ForEachUObject([&](void* raw_object, int32_t chunk_index, int32_t object_index) {
-            UObject* typed_object = static_cast<UObject*>(raw_object);
+            auto object = static_cast<UObject*>(raw_object);
 
-            if (UClass* casted_object = Cast<UClass>(typed_object))
+            if (auto uclass = Cast<UClass>(object))
             {
-                if ((casted_object->GetClassFlags() & CLASS_Native) != 0)
+                if (uclass->HasAnyClassFlags(CLASS_Native))
                 {
-                    native_classes_to_dump.push_back(casted_object);
+                    native_classes_to_dump.push_back(uclass);
                 }
             }
-            else if (UScriptStruct* casted_struct = Cast<UScriptStruct>(typed_object))
+            else if (auto ustruct = Cast<UScriptStruct>(object))
             {
-                if ((casted_struct->GetStructFlags() & STRUCT_Native) != 0)
+                if (ustruct->HasAnyStructFlags(STRUCT_Native))
                 {
-                    native_structs_to_dump.push_back(casted_struct);
+                    native_structs_to_dump.push_back(ustruct);
                 }
             }
-            else if (UEnum* uenum = Cast<UEnum>(typed_object))
+            else if (auto uenum = Cast<UEnum>(object))
             {
-                if (!typed_object->IsA<UUserDefinedEnum>())
+                if (!object->IsA<UUserDefinedEnum>())
                 {
                     native_enums_to_dump.push_back(uenum);
                 }
             }
-            else if (UFunction* function = Cast<UFunction>(typed_object))
+            else if (auto function = Cast<UFunction>(object); function && is_delegate_signature_function(function))
             {
                 // We are looking for delegate signature functions located inside the native packages
                 // When they are located directly on the top level, they will result in a separate header, otherwise they will
                 // be included into their respective outer header
-                if (is_delegate_signature_function(function) && function->GetOuterPrivate()->IsA<UPackage>())
+                if (auto package = Cast<UPackage>(function->GetOuterPrivate()); package && is_script_package(package))
                 {
-                    UPackage* outer_package = Cast<UPackage>(function->GetOuterPrivate());
-
-                    // Make sure the function package actually corresponds to the real native module
-                    if (!get_module_name_for_package(outer_package).empty())
-                    {
-                        native_delegates_to_dump.push_back(function);
-                    }
+                    native_delegates_to_dump.push_back(function);
                 }
             }
-
             return RC::LoopAction::Continue;
         });
 
@@ -3780,43 +3760,17 @@ namespace RC::UEGenerator
         }
 
         Output::send(STR("Writing stub module build files for {} modules\n"), m_module_dependencies.size());
-        for (const auto& [module_name,_] : m_module_dependencies)
+        for (const auto& [package,_] : m_module_dependencies)
         {
-            generate_module_implementation_file(module_name);
-            generate_module_build_file(module_name);
-        }
+            auto module_name = get_module_name_for_package(package);
+            if (module_name == m_primary_module_name) continue;
 
-        // Pass #2
-        for (auto& header_file : m_header_files)
-        {
-            auto object = header_file.get_corresponding_object();
-            bool is_struct = object->IsA<UStruct>();
-
-            // Case for FTickFunction struct
-            if (is_struct)
-            {
-                auto struct_object = std::bit_cast<UScriptStruct*>(object);
-                auto super_struct = struct_object->GetSuperScriptStruct();
-                if (super_struct)
-                {
-                    if (get_native_struct_name(super_struct) == STR("FTickFunction"))
-                    {
-                        File::StringType name{};
-                        name = get_native_struct_name(struct_object);
-                        header_file.append_line(STR(""));
-                        header_file.append_line(STR("template<>"));
-                        header_file.append_line(fmt::format(STR("struct TStructOpsTypeTraits<{}> : public TStructOpsTypeTraitsBase2<{}>"), name, name));
-                        header_file.append_line(STR("{"));
-                        header_file.append_line(STR("    enum"));
-                        header_file.append_line(STR("    {"));
-                        header_file.append_line(STR("        WithCopy = false"));
-                        header_file.append_line(STR("    };"));
-                        header_file.append_line(STR("};"));
-                    }
-                }
-            }
-            header_file.serialize_file_content_to_disk();
+            generate_module_implementation_file(package, module_name, false);
+            generate_module_build_file(package, module_name, false);
         }
+        // always generate primary game module, even if it was never referenced
+        generate_module_implementation_file(m_primary_module, m_primary_module_name, true);
+        generate_module_build_file(m_primary_module, m_primary_module_name, true);
 
         Output::send(STR("Done!\n"));
     }
@@ -3977,24 +3931,17 @@ namespace RC::UEGenerator
 
     auto UEHeaderGenerator::generate_object_description_file(UObject* object) -> bool
     {
-        const std::wstring module_name = get_module_name_for_package(object->GetOutermost());
-        const std::wstring file_base_name = get_header_name_for_object(object);
+        auto package = Cast<UPackage>(object->GetOutermost());
+        assert(package);
+        if (m_ignored_modules.contains(package)) return false;
 
-        if (module_name.empty())
-        {
-            return false;
-        }
-        if (m_ignored_module_names.contains(module_name))
-        {
-            return false;
-        }
+        auto file_base_name = get_file_base_name_for_object(object);
+        auto module_name = get_module_name_for_package(package);
 
-        GeneratedSourceFile& header_file =
-                m_header_files.emplace_back(GeneratedSourceFile::create_source_file(m_root_directory, module_name, file_base_name, false, object));
-        GeneratedSourceFile implementation_file = GeneratedSourceFile::create_source_file(m_root_directory, module_name, file_base_name, true, object);
-        implementation_file.set_header_file(&header_file);
+        GeneratedSourceFile header_file = GeneratedSourceFile::create_source_file(m_root_directory, module_name, file_base_name, false, object);
+        GeneratedSourceFile implementation_file = GeneratedSourceFile::create_source_file(m_root_directory, module_name, file_base_name, true, object, &header_file);
 
-        if (UClass* uclass = Cast<UClass>(object))
+        if (auto uclass = Cast<UClass>(object))
         {
             if (uclass->IsChildOf<UInterface>())
             {
@@ -4006,75 +3953,53 @@ namespace RC::UEGenerator
                 generate_object_implementation(uclass, implementation_file);
             }
         }
-        else if (UScriptStruct* script_struct = Cast<UScriptStruct>(object))
+        else if (auto script_struct = Cast<UScriptStruct>(object))
         {
             generate_struct_definition(script_struct, header_file);
             generate_struct_implementation(script_struct, implementation_file);
         }
-        else if (UEnum* uenum = Cast<UEnum>(object))
+        else if (auto uenum = Cast<UEnum>(object))
         {
             generate_enum_definition(uenum, header_file);
         }
-        else if (UFunction* function = Cast<UFunction>(object))
+        else if (auto function = Cast<UFunction>(object))
         {
-            if (!is_delegate_signature_function(function))
-            {
-                throw std::runtime_error(RC::fmt("Function %S is not a delegate signature function", function->GetName().c_str()));
-            }
-            if (!function->GetOuterPrivate()->IsA<UPackage>())
-            {
-                throw std::runtime_error(RC::fmt("Delegate Signature Function %S does not have a UPackage as it's owner", function->GetName().c_str()));
-            }
+            assert(is_delegate_signature_function(function));
+            assert(function->GetOuterPrivate()->IsA<UPackage>());
             generate_global_delegate_declaration(function, NULL, header_file);
         }
         else
         {
-            throw std::runtime_error(
-                    RC::fmt("Provided object %S is not of a supported type: %S", object->GetName().c_str(), object->GetClassPrivate()->GetName().c_str()));
+            throw std::runtime_error(RC::fmt("Provided object %S is not of a supported type: %S", object->GetName().c_str(), object->GetClassPrivate()->GetName().c_str()));
         }
 
-        auto& out_dependency_module_names = m_module_dependencies[module_name];
-        if (!header_file.has_content_to_save())
-        {
-            return false;
-        }
-        implementation_file.serialize_file_content_to_disk();
+        auto& out_dependency_module_names = m_module_dependencies[package];
+        if (!header_file.has_content_to_save()) return false;
 
-        // This is necessary because header_file.serialize_file_content_to_disk() is not called anymore
-        // so we need to call all the necessary internal code to generate the dependency list
-        // otherwise the below code for copy_dependency_module_names will not work.
-        header_file.generate_file_contents();
+        header_file.serialize_file_content_to_disk(*this);
+        implementation_file.serialize_file_content_to_disk(*this);
 
-        // Record module names used in the headers
-        header_file.copy_dependency_module_names(out_dependency_module_names);
-        implementation_file.copy_dependency_module_names(out_dependency_module_names);
-
+        // Record module names used in the files
+        out_dependency_module_names.insert(header_file.module_dependencies().begin(), header_file.module_dependencies().end());
+        out_dependency_module_names.insert(implementation_file.module_dependencies().begin(), implementation_file.module_dependencies().end());
         return true;
     }
 
-    auto UEHeaderGenerator::generate_object_pre_declaration(UObject* object) -> std::vector<std::vector<std::wstring>>
+    auto UEHeaderGenerator::generate_object_pre_declaration(std::vector<StringType>& decls, UObject* object) -> void
     {
-        std::vector<std::vector<std::wstring>> pre_declarations;
-
-        UClass* object_class = object->GetClassPrivate();
-
-        if (object_class->IsChildOf(UClass::StaticClass()))
+        if (auto uclass = Cast<UClass>(object))
         {
-            UClass* uclass = static_cast<UClass*>(object);
-
-            if (uclass->IsChildOf(UInterface::StaticClass()))
+            if (uclass->IsA<UInterface>())
             {
-                pre_declarations.push_back({STR("class "), get_native_class_name(uclass, true), STR(";\n")});
+                decls.push_back(fmt::format(STR("class {};"), get_native_class_name(uclass, true)));
             }
-            pre_declarations.push_back({STR("class "), get_native_class_name(uclass, false), STR(";\n")});
+            decls.push_back(fmt::format(STR("class {};"), get_native_class_name(uclass, false)));
         }
-        else if (object_class->IsChildOf(UScriptStruct::StaticClass()))
+        else if (auto script_struct = Cast<UScriptStruct>(object))
         {
-            UScriptStruct* script_struct = static_cast<UScriptStruct*>(object);
-
-            pre_declarations.push_back({STR("struct "), get_native_struct_name(script_struct), STR(";\n")});
+            decls.push_back(fmt::format(STR("struct {};"), get_native_struct_name(script_struct)));
         }
-        else if (object_class->IsChildOf(UEnum::StaticClass()))
+        else if (object->IsA<UEnum>())
         {
             // TODO do we want them? They're not that easy since we do not know enum types precisely in advance
             throw std::invalid_argument("Enum pre-declarations are not supported");
@@ -4083,79 +4008,36 @@ namespace RC::UEGenerator
         {
             throw std::invalid_argument("Provided object is not of a supported type, should be UClass/UScriptStruct/UEnum");
         }
-
-        return pre_declarations;
     }
 
-    auto UEHeaderGenerator::get_header_name_for_object(UObject* object, bool get_existing_header) -> std::wstring
+    auto UEHeaderGenerator::get_file_base_name_for_object(UObject* object) -> StringType
     {
-        File::StringType header_name{};
-        UObject* final_object{};
-
-        if (object->IsA<UClass>() || object->IsA<UScriptStruct>())
+        assert(object && object->GetOuterPrivate()->IsA<UPackage>());
+        StringType header_name;
+        if (object->IsA<UClass>() || object->IsA<UScriptStruct>() || object->IsA<UEnum>())
         {
             // Class and struct headers follow the relevant object name
-            header_name = object->GetName();
-            final_object = object;
-        }
-        else if (object->IsA<UEnum>())
-        {
-            // Enumeration usually have the E prefix which will be present in the header names
+            // Enumerations usually have the E prefix which will be present in the header names
             // We do not strip it because there are some broken headers that do not follow that convention (e.g. funny Wwise)
             header_name = object->GetName();
-            final_object = object;
+        }
+        else if (auto func = Cast<UFunction>(object))
+        {
+            assert(is_delegate_signature_function(func));
+            // for a top-level delegate, remove the postfix and use the function name as the header name
+            header_name = strip_delegate_signature_postfix(func);
         }
         else
         {
-            // Delegate signature functions need to have their postfix removed
-            UFunction* signature_function = Unreal::Cast<UFunction>(object);
-            if (signature_function != nullptr && is_delegate_signature_function(signature_function))
-            {
-
-                // If delegate is not declared inside the package, it is declared in the header of it's outer
-                if (!signature_function->GetOuterPrivate()->IsA<UPackage>())
-                {
-                    final_object = signature_function->GetOuterPrivate();
-                    header_name = get_header_name_for_object(final_object, get_existing_header);
-                }
-                else
-                {
-                    // Otherwise, remove the postfix and use the function name as the header name
-                    // Also append the delegate postfix because apparently there can be conflicts
-                    std::wstring DelegateName = strip_delegate_signature_postfix(signature_function);
-                    DelegateName.append(STR("Delegate"));
-                    header_name = DelegateName;
-                    final_object = object;
-                }
-            }
-        }
-
-        if (header_name.empty())
-        {
-            // Unsupported dependency object type
             throw std::runtime_error(RC::fmt("Unsupported dependency object type %S: %S", object->GetClassPrivate()->GetName().c_str(), object->GetName().c_str()));
         }
 
-        if (get_existing_header)
+        auto& id = m_header_ids[object];
+        if (id.is_invalid())
         {
-            if (auto it2 = m_dependency_object_to_unique_id.find(final_object); it2 != m_dependency_object_to_unique_id.end())
-            {
-                header_name.append(fmt::format(STR("{}"), it2->second));
-            }
+            id = m_used_file_names[header_name].generate();
         }
-        else
-        {
-            if (auto it = m_used_file_names.find(header_name); it != m_used_file_names.end())
-            {
-                header_name.append(fmt::format(STR("{}"), ++it->second.usable_id));
-                m_dependency_object_to_unique_id.emplace(final_object, it->second.usable_id);
-            }
-            else
-            {
-                m_used_file_names.emplace(header_name, UniqueName{header_name});
-            }
-        }
-
+        fmt::format_to(std::back_inserter(header_name), STR("{}"), id);
         return header_name;
     }
 
@@ -4183,25 +4065,21 @@ namespace RC::UEGenerator
         return filename;
     }
 
-    auto UEHeaderGenerator::generate_cross_module_include(UObject* object, std::wstring_view module_name, std::wstring_view fallback_name) -> std::wstring
+    auto UEHeaderGenerator::generate_cross_module_include(UObject* object) -> StringType
     {
-        // Retrieve the most top level object located inside the native package
-        UObject* top_level_object = object;
-
-        while (!top_level_object->GetOuterPrivate()->IsA<UPackage>())
-        {
-            top_level_object = top_level_object->GetOuterPrivate();
-        }
-
-        const std::wstring object_name = top_level_object->GetName();
+        auto package = Cast<UPackage>(object->GetOutermost());
+        assert(package);
+        auto module_name = get_module_name_for_package(package);
+        auto object_name = object->GetName();
+        auto fallback_name = get_file_base_name_for_object(object);
         return fmt::format(STR("//CROSS-MODULE INCLUDE V2: -ModuleName={} -ObjectName={} -FallbackName={}\n"), module_name, object_name, fallback_name);
     }
 
     GeneratedFile::GeneratedFile(const FFilePath& full_file_path)
     {
-        this->m_full_file_path = full_file_path;
-        this->m_file_base_name = full_file_path.filename().replace_extension().wstring();
-        this->m_current_indent_count = 0;
+        m_full_file_path = full_file_path;
+        m_file_base_name = full_file_path.filename().replace_extension().wstring();
+        m_current_indent_count = 0;
     }
 
     auto GeneratedFile::append_line(StringViewType line) -> void
@@ -4210,7 +4088,7 @@ namespace RC::UEGenerator
     }
     auto GeneratedFile::append_line() -> void
     {
-        format_line(STR(""));
+        m_file_contents_buffer += '\n';
     }
     auto GeneratedFile::append_line_no_indent(StringViewType line) -> void
     {
@@ -4219,287 +4097,207 @@ namespace RC::UEGenerator
 
     auto GeneratedFile::begin_indent_level() -> void
     {
-        m_current_indent_count++;
+        ++m_current_indent_count;
     }
-
     auto GeneratedFile::end_indent_level() -> void
     {
-        m_current_indent_count--;
-        if (m_current_indent_count < 0)
-        {
-            throw std::invalid_argument("Attempt to pop empty indent level stack");
-        }
+        assert(m_current_indent_count > 0);
+        --m_current_indent_count;
     }
 
-    auto GeneratedFile::serialize_file_content_to_disk() -> bool
+    auto GeneratedFile::serialize_file_content_to_disk(UEHeaderGenerator& generator) -> bool
     {
         if (!has_content_to_save())
         {
             return false;
         }
         // TODO might be slow, maybe move it out into the header generator?
-        std::filesystem::create_directories(this->m_full_file_path.parent_path());
+        std::filesystem::create_directories(m_full_file_path.parent_path());
 
         std::wofstream file_output_stream;
         file_output_stream.open(m_full_file_path);
         if (!file_output_stream.is_open())
         {
-            throw std::invalid_argument("Failed to open the header file");
+            throw std::runtime_error("Failed to open the header file");
         }
-        file_output_stream << generate_file_contents();
+        generate_file_contents(file_output_stream, generator);
         file_output_stream.close();
         return true;
-    }
-
-    auto GeneratedFile::generate_file_contents() -> std::wstring
-    {
-        return m_file_contents_buffer;
     }
 
     auto GeneratedFile::has_content_to_save() const -> bool
     {
         return !m_file_contents_buffer.empty();
     }
+    auto GeneratedFile::generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void
+    {
+        out << m_file_contents_buffer;
+    }
 
     auto GeneratedSourceFile::create_source_file(const FFilePath& root_dir,
-                                                 std::wstring_view module_name,
-                                                 std::wstring const& base_name,
+                                                 StringViewType module_name,
+                                                 StringType const& base_name,
                                                  bool is_implementation_file,
-                                                 UObject* object) -> GeneratedSourceFile
+                                                 UObject* object,
+                                                 GeneratedSourceFile* header_file) -> GeneratedSourceFile
     {
-        FFilePath full_file_path;
-        if (is_implementation_file)
-        {
-            full_file_path = root_dir / module_name / STR("Private") / (base_name + STR(".cpp"));
-        }
-        else
-        {
-            full_file_path = root_dir / module_name / STR("Public") / (base_name + STR(".h"));
-        }
-        return GeneratedSourceFile(full_file_path, module_name, is_implementation_file, object);
+        FFilePath path{root_dir};
+        path /= module_name;
+        path /= is_implementation_file ? STR("Private") : STR("Public");
+        path /= base_name;
+        path += is_implementation_file ? STR(".cpp") : STR(".h");
+        return {path, is_implementation_file, object, header_file};
     }
 
-    GeneratedSourceFile::GeneratedSourceFile(const FFilePath& file_path, std::wstring_view file_module_name, bool is_implementation_file, UObject* object)
+    GeneratedSourceFile::GeneratedSourceFile(const FFilePath& file_path, bool is_implementation_file, UObject* object, GeneratedSourceFile* header_file)
         : GeneratedFile(file_path)
+        , m_is_implementation_file(is_implementation_file)
+        , m_object(object)
+        , m_header_file(header_file)
     {
-        this->m_file_module_name = file_module_name;
-        this->m_is_implementation_file = is_implementation_file;
-        this->m_object = object;
-    }
-
-    auto GeneratedSourceFile::set_header_file(GeneratedSourceFile* header_file) -> void
-    {
-        this->m_header_file = header_file;
     }
 
     auto GeneratedSourceFile::add_extra_include(std::wstring included_file_name) -> void
     {
-        this->m_extra_includes.insert(included_file_name);
+        m_extra_includes.insert(included_file_name);
     }
 
-    auto GeneratedSourceFile::add_dependency_object(UObject* object, DependencyLevel dependency_level) -> void
+    static UObject* get_dependency_object_for(UObject* object)
     {
-        auto& level = m_dependencies[object];
-        if (level < dependency_level) level = dependency_level;
+        /*if (auto func = Cast<UFunction>(object); func && !func->GetOuterPrivate()->IsA<UPackage>() && is_delegate_signature_function(func))
+        {
+            return func->GetOuterPrivate();
+        }*/
+        while (!object->GetOuterPrivate()->IsA<UPackage>())
+        {
+            object = object->GetOuterPrivate();
+        }
+        return object;
+    }
+    auto GeneratedSourceFile::add_dependency(UObject* object, DependencyLevel dependency_level) -> void
+    {
+        assert(dependency_level > DependencyLevel::NoDependency);
+
+        auto topmost = get_dependency_object_for(object);
+        if (topmost == get_object()) return;
+
+        auto& level = m_dependencies[topmost];
+        if (level >= dependency_level) return;
+        level = dependency_level;
+
+        auto package = Cast<UPackage>(topmost->GetOuterPrivate());
+        assert(package);
+        if (package == get_package()) return;
+        m_module_dependencies.insert(package);
     }
 
-    auto GeneratedSourceFile::generate_file_contents() -> std::wstring
+    auto GeneratedSourceFile::generate_includes_string(StringType& out, UEHeaderGenerator& generator) const -> void
     {
-        std::wstring result_header_contents;
-        result_header_contents.append(generate_includes_string());
-        result_header_contents.append(STR("\n"));
+        std::vector<StringType> local_includes;
+        std::vector<StringType> cross_module_includes;
+        std::vector<StringType> pre_decls;
 
-        std::wstring pre_declarations_string = generate_pre_declarations_string();
-        if (!pre_declarations_string.empty())
+        if (is_header())
         {
-            result_header_contents.append(pre_declarations_string);
-            result_header_contents.append(STR("\n"));
+            // For the header file, we generate the pragma and minimal core includes
+            out.append(STR("#pragma once\n"));
+            out.append(STR("#include \"CoreMinimal.h\"\n"));
         }
-
-        if (!m_implementation_constructor.empty())
+        else
         {
-            result_header_contents.append(m_implementation_constructor);
-            result_header_contents.append(STR("\n"));
-        }
-
-        if (!m_file_contents_buffer.empty())
-        {
-            result_header_contents.append(m_file_contents_buffer);
-            result_header_contents.append(STR("\n"));
-        }
-        return result_header_contents;
-    }
-
-    auto GeneratedSourceFile::generate_includes_string() const -> std::wstring
-    {
-        std::wstring result_include_string;
-        std::vector<std::vector<std::wstring>> include_lines;
-        std::vector<std::wstring> cross_module_includes;
-
-        // For the header file, we generate the pragma and minimal core includes
-        if (!m_is_implementation_file)
-        {
-            result_include_string.append(STR("#pragma once\n"));
-            result_include_string.append(STR("#include \"CoreMinimal.h\"\n"));
-        }
-        // For CPP implementation file, we need to generate the header include
-        if (m_is_implementation_file)
-        {
-            if (m_header_file != NULL)
+            // For CPP implementation file, we need to generate the header include
+            if (m_header_file)
             {
                 // Generate it if we have the correct header file set
-                result_include_string.append(fmt::format(STR("#include \"{}.h\"\n"), m_header_file->m_file_base_name));
+                fmt::format_to(std::back_inserter(out), STR("#include \"{}.h\"\n"), m_header_file->m_file_base_name);
             }
             else
             {
                 // Otherwise, we generate a simple minimal core include
-                result_include_string.append(STR("#include \"CoreMinimal.h\"\n"));
+                out.append(STR("#include \"CoreMinimal.h\"\n"));
             }
         }
 
         // Generate extra includes we might need that do not represent objects
-        for (std::wstring const& extra_included_file : m_extra_includes)
+        for (auto const& extra_included_file : m_extra_includes)
         {
-            include_lines.push_back({STR("#include \""), extra_included_file, STR("\"\n")});
+            local_includes.push_back(extra_included_file);
         }
 
         // Generate includes for the relevant object files
-        for (const auto& dependency_pair : m_dependencies)
+        for (auto [dep, level] : m_dependencies)
         {
-            UObject* dependency_object = dependency_pair.first;
-
-            // Only want to generate include dependencies
-            if (dependency_pair.second != DependencyLevel::Include)
-            {
-                continue;
-            }
-
-            const std::wstring object_header_name = UEHeaderGenerator::get_header_name_for_object(dependency_object, true);
-
-            // Definitely skip include if object in question is placed into this header
-            if (object_header_name == m_file_base_name)
-            {
-                continue;
-            }
-
             // Skip includes that have already been generated on the header file
-            if (m_is_implementation_file && m_header_file)
-            {
-                if (m_header_file->has_dependency(dependency_object, DependencyLevel::Include))
-                {
-                    continue;
-                }
-            }
-            UObject* package = dependency_object->GetOutermost();
-            std::wstring native_module_name = UEHeaderGenerator::get_module_name_for_package(package);
+            if (m_header_file && m_header_file->has_dependency(dep, level)) continue;
 
-            if (!native_module_name.empty())
+            if (level == DependencyLevel::Include)
             {
-                // If this package corresponds to the file inside this module, we generate the normal include,
-                // since generated headers are always located in the module root and follow one file per object convention
-                if (m_file_module_name == native_module_name)
+                auto dep_package = Cast<UPackage>(dep->GetOutermost());
+                if (dep_package == get_package())
                 {
-                    include_lines.push_back({STR("#include \""), object_header_name, STR(".h\"\n")});
+                    // If this package corresponds to the file inside this module, we generate the normal include,
+                    // since generated headers are always located in the module root and follow one file per object convention
+                    local_includes.push_back(fmt::format(STR("{}.h"), generator.get_file_base_name_for_object(dep)));
                 }
                 else
                 {
                     // Otherwise, we generate an include stub which will be handled by the unreal engine commandlet later
-                    m_dependency_module_names.insert(native_module_name);
-                    cross_module_includes.push_back(UEHeaderGenerator::generate_cross_module_include(dependency_object, native_module_name, object_header_name));
+                    cross_module_includes.emplace_back(generator.generate_cross_module_include(dep));
                 }
             }
-        }
-
-        // Sort the cross module includes and add them to the result so that they are always above the rest of the includes
-        std::sort(cross_module_includes.begin(), cross_module_includes.end());
-
-        // Remove duplicates - there are sometimes multiple instances of the same cross module include
-        cross_module_includes.erase(std::unique(cross_module_includes.begin(), cross_module_includes.end()), cross_module_includes.end());
-
-        for (std::wstring const& cross_module_include : cross_module_includes)
-        {
-            result_include_string.append(cross_module_include);
-        }
-
-        // Sort the includes by module name, since we want to make sure that they are always in the same order
-        std::sort(include_lines.begin(), include_lines.end(), [](const std::vector<std::wstring>& a, const std::vector<std::wstring>& b) {
-            return a[1] < b[1];
-        });
-
-        for (const auto& line : include_lines)
-        {
-            for (const auto& part : line)
+            else if (level == DependencyLevel::PreDeclaration)
             {
-                result_include_string.append(part);
+                generator.generate_object_pre_declaration(pre_decls, dep);
+            }
+            else
+            {
+                assert(false);
             }
         }
 
+        // Sort everything for determinism
+        std::sort(cross_module_includes.begin(), cross_module_includes.end());
+        std::sort(local_includes.begin(), local_includes.end());
+        std::sort(pre_decls.begin(), pre_decls.end());
+
+        for (auto const& incl : cross_module_includes)
+        {
+            fmt::format_to(std::back_inserter(out), STR("{}\n"), incl);
+        }
+        for (const auto& file : local_includes)
+        {
+            fmt::format_to(std::back_inserter(out), STR("#include \"{}\"\n"), file);
+        }
         // Last include of the header file should always be a generated one
         if (!m_is_implementation_file)
         {
-            result_include_string.append(fmt::format(STR("#include \"{}.generated.h\"\n"), m_file_base_name));
+            fmt::format_to(std::back_inserter(out), STR("#include \"{}.generated.h\"\n"), m_file_base_name);
         }
-        return result_include_string;
-    }
-
-    auto GeneratedSourceFile::generate_pre_declarations_string() const -> std::wstring
-    {
-        std::wstring result_declarations;
-        std::vector<std::vector<std::vector<std::wstring>>> pre_declarations;
-
-        // Generate pre-declarations for the relevant object files
-        for (const auto& dependency_pair : m_dependencies)
+        if (!pre_decls.empty())
         {
-            UObject* dependency_object = dependency_pair.first;
-
-            // Only want to generate pre-declarations
-            if (dependency_pair.second != DependencyLevel::PreDeclaration)
+            out += '\n';
+            for (const auto& decl : pre_decls)
             {
-                continue;
-            }
-
-            // We still need to reference the object's owner module
-            UObject* package = dependency_object->GetOutermost();
-            std::wstring native_module_name = UEHeaderGenerator::get_module_name_for_package(package);
-
-            if (!native_module_name.empty() && m_file_module_name != native_module_name)
-            {
-                m_dependency_module_names.insert(native_module_name);
-            }
-
-            if (!m_is_implementation_file) pre_declarations.push_back(UEHeaderGenerator::generate_object_pre_declaration(dependency_object));
-        }
-
-        // Sort the entries alphabetically by the class name
-        std::sort(pre_declarations.begin(),
-                  pre_declarations.end(),
-                  [](const std::vector<std::vector<std::wstring>>& a, const std::vector<std::vector<std::wstring>>& b) {
-                      return a[0][1] < b[0][1];
-                  });
-
-        // Add pre_declarations to result_declarations
-        for (const auto& declaration : pre_declarations)
-        {
-            for (const auto& line : declaration)
-            {
-                for (const auto& part : line)
-                {
-                    result_declarations.append(part);
-                }
+                fmt::format_to(std::back_inserter(out), STR("{}\n"), decl);
             }
         }
-
-        return result_declarations;
+        out += '\n';
     }
 
     auto GeneratedSourceFile::has_content_to_save() const -> bool
     {
         return !m_file_contents_buffer.empty();
     }
-
+    auto GeneratedSourceFile::generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void
+    {
+        StringType includes;
+        generate_includes_string(includes, generator);
+        out << includes;
+        out << m_file_contents_buffer;
+    }
     auto GeneratedSourceFile::has_dependency(UObject* object, DependencyLevel dependency_level) -> bool
     {
-        const auto iterator = m_dependencies.find(object);
-        return iterator != m_dependencies.end() && ((int32_t)iterator->second >= (int32_t)dependency_level);
+        auto it = m_dependencies.find(object);
+        return it != m_dependencies.end() && it->second >= dependency_level;
     }
 } // namespace RC::UEGenerator

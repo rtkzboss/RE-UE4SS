@@ -325,25 +325,25 @@ namespace RC::GUI
             m_os_backend->imgui_backend_newframe();
             ImGui::NewFrame();
 
-            try
-            {
+            /*try
+            {*/
                 on_update();
-            }
-            catch (std::exception& e)
-            {
-                if (!Output::has_internal_error())
-                {
-                    Output::send<LogLevel::Error>(STR("Error: {}\n"), to_wstring(e.what()));
-                }
-                else
-                {
-                    printf_s("Internal Error: %s\n", e.what());
-                }
+            //}
+            //catch (std::exception& e)
+            //{
+            //    if (!Output::has_internal_error())
+            //    {
+            //        Output::send<LogLevel::Error>(STR("Error: {}\n"), to_wstring(e.what()));
+            //    }
+            //    else
+            //    {
+            //        printf_s("Internal Error: %s\n", e.what());
+            //    }
 
-                // You're not allowed to throw exceptions directly inside a frame!
-                // Use GUI::TRY to move exceptions to the end of the frame.
-                abort();
-            }
+            //    // You're not allowed to throw exceptions directly inside a frame!
+            //    // Use GUI::TRY to move exceptions to the end of the frame.
+            //    abort();
+            //}
 
             ImGui::Render();
 

@@ -11,6 +11,7 @@
 #include <SettingsManager.hpp>
 #include <Unreal/Property/FObjectProperty.hpp>
 #include <Unreal/Property/FSoftObjectProperty.hpp>
+#include <Unreal/UPackage.hpp>
 #pragma warning(disable : 4005)
 #include <Unreal/NameTypes.hpp>
 #pragma warning(default : 4005)
@@ -20,6 +21,7 @@ namespace RC::Unreal
     class UObject;
     class UFunction;
     class UStruct;
+    class UPackage;
     class FProperty;
     class FNumericProperty;
     class UClass;
@@ -43,6 +45,10 @@ namespace RC::UEGenerator
     using UEnum = RC::Unreal::UEnum;
     using UScriptStruct = RC::Unreal::UScriptStruct;
     using UFunction = RC::Unreal::UFunction;
+    using UPackage = RC::Unreal::UPackage;
+
+    template<class... Args>
+    using FormatStringType = fmt::basic_format_string<CharType, std::type_identity_t<Args>...>;
 
     enum class DependencyLevel
     {
@@ -73,14 +79,14 @@ namespace RC::UEGenerator
 
     struct PropertyTypeDeclarationContext
     {
-        std::wstring context_name;
+        StringType context_name;
 
         class GeneratedSourceFile* source_file;
 
         bool is_top_level_declaration;
         bool* out_is_bitmask_bool;
 
-        PropertyTypeDeclarationContext(std::wstring_view context_name,
+        PropertyTypeDeclarationContext(StringViewType context_name,
                                        GeneratedSourceFile* source_file = NULL,
                                        bool is_top_level_declaration = false,
                                        bool* out_is_bitmask_bool = NULL)
@@ -99,24 +105,72 @@ namespace RC::UEGenerator
 
     struct StringInsensitiveCompare
     {
-        auto operator()(std::wstring const& a, std::wstring const& b) const -> bool
+        auto operator()(StringType const& a, StringType const& b) const -> bool
         {
             return _wcsicmp(a.c_str(), b.c_str()) < 0;
         }
     };
 
     using CaseInsensitiveSet = std::unordered_set<FName>;
+    class UEHeaderGenerator;
+
+    class UniqueId
+    {
+        static constexpr uint32_t INVALID = 0;
+        static constexpr uint32_t FIRST = 1;
+        uint32_t inner = INVALID;
+        UniqueId(uint32_t inner) : inner(inner)
+        {
+        }
+
+        friend struct UniqueIdGen;
+        friend struct fmt::formatter<UniqueId, CharType>;
+
+      public:
+        UniqueId()
+        {
+        }
+
+        auto is_invalid() const -> bool
+        {
+            return inner == INVALID;
+        }
+        auto is_valid() const -> bool
+        {
+            return !is_invalid();
+        }
+        auto is_first() const -> bool
+        {
+            return inner == FIRST;
+        }
+        operator bool() const
+        {
+            return is_valid();
+        }
+        bool operator!() const
+        {
+            return is_invalid();
+        }
+    };
+    struct UniqueIdGen
+    {
+        uint32_t next_id{UniqueId::FIRST};
+        auto generate() -> UniqueId
+        {
+            return next_id++;
+        }
+    };
 
     class GeneratedFile
     {
       public:
         static constexpr StringViewType INDENT = STR("    ");
       protected:
-        std::wstring m_file_base_name;
+        StringType m_file_base_name;
         FFilePath m_full_file_path;
 
-        std::wstring m_file_contents_buffer;
-        int32_t m_current_indent_count;
+        StringType m_file_contents_buffer;
+        uint8_t m_current_indent_count;
 
       public:
         GeneratedFile(const FFilePath& full_file_path);
@@ -132,27 +186,34 @@ namespace RC::UEGenerator
         auto append_line_no_indent(StringViewType line) -> void;
 
         template <class... Args>
-        auto format_line_no_indent(std::wformat_string<Args...> fmt, Args&&... args)
+        auto format_line_no_indent(fmt::wstring_view fmt, Args const&... args)
         {
-            std::format_to(std::back_inserter(m_file_contents_buffer), fmt, std::forward<Args>(args)...);
+            fmt::vformat_to(std::back_inserter(m_file_contents_buffer), fmt, fmt::make_wformat_args(args...));
             m_file_contents_buffer += '\n';
         }
         template <class... Args>
-        auto format_line(std::wformat_string<Args...> fmt, Args&&... args)
+        auto format_line(fmt::wstring_view fmt, Args const&... args)
         {
+            auto before_indent = m_file_contents_buffer.size();
             for (int32_t i = 0; i < m_current_indent_count; i++)
             {
                 m_file_contents_buffer += INDENT;
             }
-            format_line_no_indent(fmt, std::forward<Args>(args)...);
+            auto begin = m_file_contents_buffer.size();
+            format_line_no_indent(fmt, args...);
+            if (m_file_contents_buffer.size() == begin + 1)
+            {
+                // erase indentation from empty lines
+                m_file_contents_buffer.erase(before_indent, begin);
+            }
         }
 
         auto begin_indent_level() -> void;
         auto end_indent_level() -> void;
-        auto serialize_file_content_to_disk() -> bool;
+        auto serialize_file_content_to_disk(UEHeaderGenerator& generator) -> bool;
 
         virtual auto has_content_to_save() const -> bool;
-        virtual auto generate_file_contents() -> std::wstring;
+        virtual auto generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void;
     };
 
     struct PropertyAccess
@@ -172,11 +233,11 @@ namespace RC::UEGenerator
     using PropertySpec = std::variant<PropertyAccess, ArrayAccess>;
     class PropertyScope
     {
-        std::wstring_view m_root;
+        StringViewType m_root;
         std::vector<std::tuple<FProperty*, int32_t>> m_elements;
 
       public:
-        PropertyScope(std::wstring_view root);
+        PropertyScope(StringViewType root);
         PropertyScope();
         auto pop() -> void;
         auto push(FProperty* prop, int32_t index) -> void;
@@ -207,78 +268,66 @@ namespace RC::UEGenerator
     class GeneratedSourceFile : public GeneratedFile
     {
       private:
-        std::wstring m_file_module_name;
         std::map<UObject*, DependencyLevel> m_dependencies;
-        std::set<std::wstring> m_extra_includes;
-        mutable std::set<std::wstring> m_dependency_module_names;
-        std::unordered_map<FProperty*, uint32_t> m_cons_properties;
+        std::unordered_set<StringType> m_extra_includes;
+        std::unordered_set<UPackage*> m_module_dependencies;
+        std::unordered_map<FProperty*, UniqueId> m_cons_properties;
         UObject* m_object;
-        GeneratedSourceFile* m_header_file;
+        GeneratedSourceFile* m_header_file = nullptr;
         bool m_is_implementation_file;
-        uint32_t m_gen_id = 1;
+        UniqueIdGen m_unique_id;
 
       public:
-        std::wstring m_implementation_constructor;
-        std::unordered_map<UObject const*, int32_t> dso_lookup;
-        std::unordered_set<FName> parent_property_names{};
-        std::map<FProperty*, std::pair<PropertyScope, StringType>> attachments{};
+        std::unordered_map<UObject*, UniqueId> dso_lookup;
 
-        GeneratedSourceFile(const FFilePath& file_path, std::wstring_view file_module_name, bool is_implementation_file, UObject* object);
+        GeneratedSourceFile(const FFilePath& file_path, bool is_implementation_file, UObject* object, GeneratedSourceFile* header_file = nullptr);
 
         // Delete copy and move constructors and assignment operator
         GeneratedSourceFile(const GeneratedSourceFile&) = delete;
         GeneratedSourceFile(GeneratedSourceFile&&) = default;
         auto operator=(const GeneratedSourceFile&) -> void = delete;
 
-        auto gen_id() -> uint32_t;
+        auto gen_id() -> UniqueId
+        {
+            return m_unique_id.generate();
+        }
 
         auto set_header_file(GeneratedSourceFile* header_file) -> void;
-        auto add_dependency_object(UObject* object, DependencyLevel dependency_level) -> void;
-        auto add_extra_include(std::wstring included_file_name) -> void;
+        auto add_dependency(UObject* object, DependencyLevel dependency_level) -> void;
+        auto add_extra_include(StringType included_file_name) -> void;
 
-        auto get_header_module_name() const -> std::wstring const&
-        {
-            return m_file_module_name;
-        }
-        auto is_implementation_file() const -> bool
+        auto is_implementation() const -> bool
         {
             return m_is_implementation_file;
         }
-
-        auto get_current_string_position() -> size_t
+        auto is_header() const -> bool
         {
-            return m_file_contents_buffer.size();
+            return !m_is_implementation_file;
         }
-        auto get_corresponding_object() -> UObject*
+        auto get_package() const -> UPackage*
+        {
+            return m_object ? Cast<UPackage>(m_object->GetOutermost()) : nullptr;
+        }
+        auto get_object() const -> UObject*
         {
             return m_object;
         }
 
-        virtual auto has_content_to_save() const -> bool override;
-
-        auto copy_dependency_module_names(std::set<std::wstring>& out_dependency_module_names) const -> void
+        auto module_dependencies() const -> std::unordered_set<UPackage*> const&
         {
-            out_dependency_module_names.insert(m_dependency_module_names.begin(), m_dependency_module_names.end());
+            return m_module_dependencies;
         }
 
-        auto static create_source_file(const FFilePath& root_dir, std::wstring_view module_name, std::wstring const& base_name, bool is_implementation_file, UObject* object)
-                -> GeneratedSourceFile;
-        virtual auto generate_file_contents() -> std::wstring override;
+        auto static create_source_file(const FFilePath& root_dir, StringViewType module_name, StringType const& base_name, bool is_implementation_file, UObject* object, GeneratedSourceFile* header_file = nullptr) -> GeneratedSourceFile;
+        auto has_content_to_save() const -> bool override;
+        auto generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void override;
         auto generate_cons_property(FProperty* prop) -> StringType;
 
       protected:
         auto has_dependency(UObject* object, DependencyLevel dependency_level) -> bool;
 
-        auto generate_pre_declarations_string() const -> std::wstring;
-        auto generate_includes_string() const -> std::wstring;
-    };
-
-    struct UniqueName
-    {
-        static constexpr int32_t HAS_NO_DUPLICATES = 1;
-
-        File::StringType name{};
-        int32_t usable_id{HAS_NO_DUPLICATES};
+        auto generate_pre_declarations_string() const -> StringType;
+        auto generate_includes_string(StringType& out, UEHeaderGenerator& generator) const -> void;
     };
 
     class PropertyListView
@@ -296,26 +345,26 @@ namespace RC::UEGenerator
     {
       private:
         FFilePath m_root_directory;
-        std::wstring m_primary_module_name;
+        StringType m_primary_module_name;
+        UPackage* m_primary_module;
 
-        std::set<std::wstring> m_forced_module_dependencies;
-        std::set<std::wstring> m_ignored_module_names;
+        std::vector<StringType> m_forced_module_dependencies;
+        std::unordered_set<UPackage*> m_ignored_modules;
 
         std::unordered_map<UStruct*, void*> m_struct_defaults;
         std::unordered_map<UEnum*, FNumericProperty*> m_underlying_enum_props;
         std::set<UEnum*> m_blueprint_visible_enums;
         std::set<UScriptStruct*> m_blueprint_visible_structs;
         std::unordered_map<UClass*, DefaultSubobjects> m_default_subobjects;
-        std::map<std::wstring, std::set<std::wstring>> m_module_dependencies;
+        std::unordered_map<UPackage*, std::unordered_set<UPackage*>> m_module_dependencies;
         PropertyListView bind_widget;
         PropertyListView ignore_default;
 
-        std::vector<GeneratedSourceFile> m_header_files;
         std::unordered_set<UStruct*> m_structs_that_need_get_type_hash;
 
         // Storage to ensure that we don't have duplicate file names
-        static std::map<File::StringType, UniqueName> m_used_file_names;
-        static std::map<UObject*, int32_t> m_dependency_object_to_unique_id;
+        std::map<StringType, UniqueIdGen> m_used_file_names;
+        std::map<UObject*, UniqueId> m_header_ids;
 
         // Storage for class defaultsubojects when populating property initializers
         std::unordered_map<FName, FObjectProperty*> m_class_subobjects;
@@ -330,6 +379,7 @@ namespace RC::UEGenerator
         auto operator=(const UEHeaderGenerator&) -> void = delete;
 
         auto ignore_selected_modules() -> void;
+        auto ignore_module(StringType name) -> void;
 
         auto dump_native_packages() -> void;
         auto preprocess_delegate_signature(UFunction* sig) -> void;
@@ -341,8 +391,8 @@ namespace RC::UEGenerator
         auto preprocess_property(FProperty* prop, bool blueprint_visible) -> void;
         auto preprocess_hashed_property(FProperty* property) -> void;
         auto generate_object_description_file(UObject* object) -> bool;
-        auto generate_module_build_file(std::wstring const& module_name) -> void;
-        auto generate_module_implementation_file(std::wstring_view module_name) -> void;
+        auto generate_module_build_file(UPackage* package, StringViewType module_name, bool is_primary) -> void;
+        auto generate_module_implementation_file(UPackage* package, StringViewType module_name, bool is_primary) -> void;
 
         static auto needs_advanced_access(UStruct* this_struct, FProperty* prop) -> bool;
 
@@ -384,48 +434,43 @@ namespace RC::UEGenerator
                                               CaseInsensitiveSet const& blacklisted_parameter_names) -> void;
         auto generate_dso_value(UStruct* this_struct, UObject* object, GeneratedSourceFile& implementation_file) -> StringType;
 
-        auto generate_interface_flags(UClass* uinterface) const -> std::wstring;
-        auto generate_class_flags(UClass* uclass) const -> std::wstring;
-        auto generate_struct_flags(UScriptStruct* script_struct) const -> std::wstring;
-        auto generate_enum_flags(UEnum* uenum) const -> std::wstring;
-        auto generate_property_type_declaration(FProperty* property, const PropertyTypeDeclarationContext& context) -> std::wstring;
-        auto generate_property_flags(UStruct* ustruct, FProperty* property) const -> std::wstring;
-        auto generate_function_argument_flags(FProperty* property) const -> std::wstring;
-        auto generate_function_flags(UFunction* function, bool is_function_pure_virtual = false) const -> std::wstring;
+        auto generate_interface_flags(UClass* uinterface) const -> StringType;
+        auto generate_class_flags(UClass* uclass) const -> StringType;
+        auto generate_struct_flags(UScriptStruct* script_struct) const -> StringType;
+        auto generate_enum_flags(UEnum* uenum) const -> StringType;
+        auto generate_property_type_declaration(FProperty* property, const PropertyTypeDeclarationContext& context) -> StringType;
+        auto generate_property_flags(UStruct* ustruct, FProperty* property) const -> StringType;
+        auto generate_function_argument_flags(FProperty* property) const -> StringType;
+        auto generate_function_flags(UFunction* function, bool is_function_pure_virtual = false) const -> StringType;
         auto generate_function_parameter_list(UClass* property,
                                               UFunction* function,
                                               GeneratedSourceFile& header_data,
                                               bool generate_comma_before_name,
-                                              std::wstring_view context_name,
+                                              StringViewType context_name,
                                               CaseInsensitiveSet const& blacklisted_parameter_names,
-                                              int32_t* out_num_params = NULL) -> std::wstring;
+                                              int32_t* out_num_params = NULL) -> StringType;
 
         auto is_default_value(FProperty* prop, void const* object, void const* archetype) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
-        auto generate_soft_path(std::wstring_view kind, FSoftObjectPath const& path) -> std::wstring;
-        auto generate_object_finder(UClass* class_, std::wstring_view path, GeneratedSourceFile& implementation_file, bool is_class) -> std::wstring;
+        auto generate_soft_path(StringViewType kind, FSoftObjectPath const& path) -> StringType;
+        auto generate_object_finder(UClass* class_, StringViewType path, GeneratedSourceFile& implementation_file, bool is_class) -> StringType;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value, GeneratedSourceFile& implementation_file) -> StringType;
-        auto generate_assignment_expression(UStruct* this_struct,
-                                            FProperty* property,
-                                            int32_t index,
-                                            std::wstring_view value,
-                                            GeneratedSourceFile& implementation_file,
-                                            PropertyScope& property_scope,
-                                            std::wstring_view operator_type = STR(" = ")) -> void;
 
         auto static generate_parameter_count_string(int32_t parameter_count) -> CharType const*;
-        auto static determine_primary_game_module_name() -> std::wstring;
+        auto static determine_primary_game_module_name() -> StringType;
 
       public:
-        auto add_module_and_sub_module_dependencies(std::set<std::wstring_view>& out_module_dependencies, std::wstring const& module_name)
-                -> void;
+        auto add_module_and_sub_module_dependencies(std::set<StringViewType>& out_module_dependencies, UPackage* package) -> void;
         auto static collect_blacklisted_parameter_names(UStruct* property, bool skip_self) -> CaseInsensitiveSet;
 
-        auto static generate_object_pre_declaration(UObject* object) -> std::vector<std::vector<std::wstring>>;
+        auto static generate_object_pre_declaration(std::vector<StringType>& decls, UObject* object) -> void;
 
-        auto static convert_module_name_to_api_name(std::wstring module_name) -> std::wstring;
-        auto static get_module_name_for_package(UObject* package) -> std::wstring;
-        auto static sanitize_enumeration_name(std::wstring enumeration_name) -> std::wstring;
+        auto static convert_module_name_to_api_name(StringType module_name) -> StringType;
+        auto static is_script_package(UPackage* package) -> bool;
+        auto static get_module_name_for_package(UPackage* package) -> StringType;
+        auto static get_package_name_for_module(StringType module_name) -> StringType;
+        auto static find_module(StringType name) -> UPackage*;
+        auto static sanitize_enumeration_name(StringType enumeration_name) -> StringType;
         auto static get_highest_enum(UEnum* uenum) -> int64_t;
         auto static get_lowest_enum(UEnum* uenum) -> int64_t;
 
@@ -434,8 +479,27 @@ namespace RC::UEGenerator
         auto static append_access_modifier(GeneratedSourceFile& header_data, AccessModifier needed_access, AccessModifier& current_access) -> void;
         auto static get_property_access_modifier(FProperty* property) -> AccessModifier;
         auto static get_function_access_modifier(UFunction* function) -> AccessModifier;
-        auto static create_string_literal(std::wstring_view string) -> std::wstring;
-        auto static get_header_name_for_object(UObject* object, bool get_existing_header = false) -> std::wstring;
-        auto static generate_cross_module_include(UObject* object, std::wstring_view module_name, std::wstring_view fallback_name) -> std::wstring;
+        auto static create_string_literal(StringViewType string) -> StringType;
+        auto get_file_base_name_for_object(UObject* object) -> StringType;
+        auto generate_cross_module_include(UObject* object) -> StringType;
     };
 } // namespace RC::UEGenerator
+
+template<>
+struct fmt::formatter<RC::UEGenerator::UniqueId, CharType>
+{
+    template <class ParseContext>
+    constexpr ParseContext::iterator parse(ParseContext& ctx)
+    {
+        auto it = ctx.begin();
+        if (it != ctx.end() && *it != '}') throw fmt::format_error("Invalid format args for UniqueId.");
+        return it;
+    }
+    template <class FmtContext>
+    FmtContext::iterator format(RC::UEGenerator::UniqueId s, FmtContext& ctx) const
+    {
+        assert(!s.is_invalid());
+        if (s.is_first()) return ctx.out();
+        return fmt::format_to(ctx.out(), STR("{}"), s.inner);
+    }
+};
