@@ -3968,6 +3968,8 @@ namespace RC::UEGenerator
         implementation_file.serialize_file_content_to_disk(*this);
 
         // Record module names used in the files
+        //header_file.coalesce_module_dependencies();
+        //implementation_file.coalesce_module_dependencies();
         out_dependency_module_names.insert(header_file.module_dependencies().begin(), header_file.module_dependencies().end());
         out_dependency_module_names.insert(implementation_file.module_dependencies().begin(), implementation_file.module_dependencies().end());
         return true;
@@ -4173,12 +4175,59 @@ namespace RC::UEGenerator
         if (level >= dependency_level) return;
         level = dependency_level;
 
-        auto package = Cast<UPackage>(topmost->GetOuterPrivate());
+        add_module_dependency(Cast<UPackage>(topmost->GetOuterPrivate()));
+    }
+    auto GeneratedSourceFile::add_module_dependency(UPackage* package) -> void
+    {
         assert(package);
         if (package == get_package()) return;
         m_module_dependencies.insert(package);
     }
-
+    /*
+    auto GeneratedSourceFile::coalesce_module_dependencies() -> void
+    {
+        std::unordered_set<UObject*> seen;
+        for (auto [dep, level] : m_dependencies)
+        {
+            if (level < DependencyLevel::Include) continue;
+            coalesce_object(dep, seen);
+        }
+    }
+    auto GeneratedSourceFile::coalesce_object(UObject* object, std::unordered_set<UObject*>& seen) -> void
+    {
+        if (!object) return;
+        if (!seen.insert(object).second) return;
+        if (auto ustruct = Cast<UStruct>(object))
+        {
+            add_module_dependency(Cast<UPackage>(ustruct->GetOutermost()));
+            for (auto prop : ustruct->ForEachProperty())
+            {
+                coalesce_property(prop, seen);
+            }
+            coalesce_object(ustruct->GetSuperStruct(), seen);
+        }
+    }
+    auto GeneratedSourceFile::coalesce_property(FProperty* property, std::unordered_set<UObject*>& seen) -> void
+    {
+        if (auto prop = CastField<FStructProperty>(property))
+        {
+            coalesce_object(prop->GetStruct(), seen);
+        }
+        if (auto prop = CastField<FArrayProperty>(property))
+        {
+            coalesce_property(prop->GetInner(), seen);
+        }
+        if (auto prop = CastField<FSetProperty>(property))
+        {
+            coalesce_property(prop->GetElementProp(), seen);
+        }
+        if (auto prop = CastField<FMapProperty>(property))
+        {
+            coalesce_property(prop->GetKeyProp(), seen);
+            coalesce_property(prop->GetValueProp(), seen);
+        }
+    }
+    */
     auto GeneratedSourceFile::generate_includes_string(StringType& out, UEHeaderGenerator& generator) const -> void
     {
         std::vector<StringType> local_includes;
@@ -4278,6 +4327,7 @@ namespace RC::UEGenerator
     }
     auto GeneratedSourceFile::generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void
     {
+
         StringType includes;
         generate_includes_string(includes, generator);
         out << includes;

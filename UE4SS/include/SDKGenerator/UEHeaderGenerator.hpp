@@ -303,6 +303,7 @@ namespace RC::UEGenerator
 
         auto set_header_file(GeneratedSourceFile* header_file) -> void;
         auto add_dependency(UObject* object, DependencyLevel dependency_level) -> void;
+        auto add_module_dependency(UPackage* package) -> void;
         auto add_extra_include(StringType included_file_name) -> void;
 
         auto is_implementation() const -> bool
@@ -331,12 +332,16 @@ namespace RC::UEGenerator
         auto has_content_to_save() const -> bool override;
         auto generate_file_contents(std::wofstream& out, UEHeaderGenerator& generator) -> void override;
         auto generate_cons_property(FProperty* prop) -> StringType;
+        auto coalesce_module_dependencies() -> void;
 
       protected:
         auto has_dependency(UObject* object, DependencyLevel dependency_level) -> bool;
 
         auto generate_pre_declarations_string() const -> StringType;
         auto generate_includes_string(StringType& out, UEHeaderGenerator& generator) const -> void;
+
+        auto coalesce_object(UObject* object, std::unordered_set<UObject*>& seen) -> void;
+        auto coalesce_property(FProperty* property, std::unordered_set<UObject*>& seen) -> void;
     };
 
     class PropertyListView
