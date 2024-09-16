@@ -1032,7 +1032,7 @@ namespace RC::UEGenerator
             header_data.format_line(STR("UDELEGATE({})"), generate_function_flags(signature_function));
         }
 
-        PropertyTypeDeclarationContext context(delegate_type_name, &header_data);
+        PropertyTypeDeclarationContext context(delegate_type_name, &header_data, false, true);
 
         int32_t num_delegate_parameters = 0;
         std::wstring delegate_parameter_list =
@@ -1250,25 +1250,9 @@ namespace RC::UEGenerator
         auto property_flags = generate_property_flags(ustruct, property);
 
         bool is_bitmask_bool = false;
-        PropertyTypeDeclarationContext Context(ustruct->GetName(), &header_data, true, &is_bitmask_bool);
+        PropertyTypeDeclarationContext Context(ustruct->GetName(), &header_data, true, false, &is_bitmask_bool);
 
-        std::wstring property_decl{};
-        std::wstring error_string{};
-        try
-        {
-            property_decl = generate_property_type_declaration(property, Context);
-        }
-        catch (std::exception& e)
-        {
-            error_string = to_wstring(e.what());
-            Output::send<LogLevel::Warning>(STR("Warning: {}\n"), error_string);
-            header_data.append_line(fmt::format(STR("// UPROPERTY({})"), property_flags));
-            header_data.append_line(fmt::format(STR("// Missed Property: {}"), property->GetName()));
-            header_data.append_line(fmt::format(STR("// {}"), error_string));
-            header_data.append_line();
-            return;
-        }
-
+        auto property_decl = generate_property_type_declaration(property, Context);
         property_decl.append(STR(" "));
         write_property_name(property_decl, property);
         if (property->GetArrayDim() != 1)
@@ -1316,7 +1300,7 @@ namespace RC::UEGenerator
         std::wstring return_property_string;
         if (return_property != NULL)
         {
-            PropertyTypeDeclarationContext context(uclass->GetName(), &header_data);
+            PropertyTypeDeclarationContext context(uclass->GetName(), &header_data, false, true);
             return_property_string = generate_property_type_declaration(return_property, context);
         }
         else
@@ -1627,7 +1611,7 @@ namespace RC::UEGenerator
         const std::wstring class_native_name = get_native_class_name(uclass, is_generating_interface);
         const std::wstring raw_function_name = function->GetName();
         auto function_flags = function->GetFunctionFlags();
-        PropertyTypeDeclarationContext context(uclass->GetName(), &implementation_file);
+        PropertyTypeDeclarationContext context(uclass->GetName(), &implementation_file, false, true);
 
         std::wstring function_implementation_name;
         std::wstring net_validate_function_name;
@@ -2116,16 +2100,23 @@ namespace RC::UEGenerator
 
         if (auto prop = CastField<FByteProperty>(property))
         {
-            auto enum_value = prop->GetEnum();
-            if (enum_value)
+            auto uenum = prop->GetEnum();
+            if (uenum)
             {
                 if (context.source_file)
                 {
-                    context.source_file->add_dependency(enum_value, DependencyLevel::Include);
+                    context.source_file->add_dependency(uenum, DependencyLevel::Include);
                 }
-                auto enum_name = get_native_enum_name(enum_value);
-                // Non-EnumClass enumerations should be wrapped into TEnumAsByte according to UHT, but implicit uint8s should not use TEnumAsByte
-                return fmt::format(STR("TEnumAsByte<{}>"), enum_name);
+                auto enum_name = get_native_enum_name(uenum);
+                // see FByteProperty::GetCPPType
+                if (uenum->GetCppForm() == UEnum::ECppForm::EnumClass || context.is_parm && (prop->HasAnyPropertyFlags(CPF_ReturnParm) || !prop->HasAnyPropertyFlags(CPF_OutParm)))
+                {
+                    return enum_name;
+                }
+                else
+                {
+                    return fmt::format(STR("TEnumAsByte<{}>"), enum_name);
+                }
             }
             return STR("uint8");
         }
@@ -2942,7 +2933,7 @@ namespace RC::UEGenerator
                     param_declaration.append(STR("const "));
                 }
 
-                PropertyTypeDeclarationContext context(context_name, &header_data);
+                PropertyTypeDeclarationContext context(context_name, &header_data, false, true);
                 param_declaration.append(generate_property_type_declaration(property, context));
 
                 if (needs_reference_workaround(property))

@@ -84,17 +84,20 @@ namespace RC::UEGenerator
         class GeneratedSourceFile* source_file;
 
         bool is_top_level_declaration;
+        bool is_parm;
         bool* out_is_bitmask_bool;
 
         PropertyTypeDeclarationContext(StringViewType context_name,
                                        GeneratedSourceFile* source_file = NULL,
                                        bool is_top_level_declaration = false,
+                                       bool is_parm = false,
                                        bool* out_is_bitmask_bool = NULL)
+            : context_name(context_name)
+            , source_file(source_file)
+            , is_top_level_declaration(is_top_level_declaration)
+            , is_parm(is_parm)
+            , out_is_bitmask_bool(out_is_bitmask_bool)
         {
-            this->context_name = context_name;
-            this->source_file = source_file;
-            this->is_top_level_declaration = is_top_level_declaration;
-            this->out_is_bitmask_bool = out_is_bitmask_bool;
         }
 
         auto inner_context() const -> PropertyTypeDeclarationContext
