@@ -181,6 +181,15 @@ namespace RC::UEGenerator
         GeneratedFile(GeneratedFile&&) = default;
         auto operator=(const GeneratedFile&) -> void = delete;
 
+        auto current_position() const -> size_t
+        {
+            return m_file_contents_buffer.size();
+        }
+        auto insert(size_t position, StringViewType content)
+        {
+            m_file_contents_buffer.insert(position, content);
+        }
+
         auto append_line() -> void;
         auto append_line(StringViewType line) -> void;
         auto append_line_no_indent(StringViewType line) -> void;
@@ -460,7 +469,7 @@ namespace RC::UEGenerator
         auto static determine_primary_game_module_name() -> StringType;
 
       public:
-        auto add_module_and_sub_module_dependencies(std::set<StringViewType>& out_module_dependencies, UPackage* package) -> void;
+        auto add_module_and_sub_module_dependencies(std::set<StringType>& out_module_dependencies, UPackage* package) -> void;
         auto static collect_blacklisted_parameter_names(UStruct* property, bool skip_self) -> CaseInsensitiveSet;
 
         auto static generate_object_pre_declaration(std::vector<StringType>& decls, UObject* object) -> void;

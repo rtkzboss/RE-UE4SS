@@ -455,7 +455,7 @@ namespace RC::UEGenerator
         const FFilePath module_file_path = m_root_directory / module_name / fmt::format(STR("{}.Build.cs"), module_name);
         GeneratedFile module_build_file = GeneratedFile(module_file_path);
 
-        std::set<StringViewType> public_deps{};
+        std::set<StringType> public_deps{};
         for (auto const& module_name : m_forced_module_dependencies)
         {
             public_deps.insert(module_name);
@@ -482,7 +482,7 @@ namespace RC::UEGenerator
         module_build_file.begin_indent_level();
         for (auto const& dep_name : public_deps)
         {
-            module_build_file.append_line(fmt::format(STR("\"{}\","), dep_name));
+            module_build_file.format_line(STR("\"{}\","), dep_name);
         }
         module_build_file.end_indent_level();
         module_build_file.append_line(STR("});"));
@@ -506,7 +506,7 @@ namespace RC::UEGenerator
             module_build_file.begin_indent_level();
             for (auto const& dep_name : private_deps)
             {
-                module_build_file.append_line(fmt::format(STR("\"{}\","), dep_name));
+                module_build_file.format_line(STR("\"{}\","), dep_name);
             }
             module_build_file.end_indent_level();
             module_build_file.append_line(STR("});"));
@@ -664,16 +664,12 @@ namespace RC::UEGenerator
         std::wstring parent_class_name;
         if (super_class)
         {
+            header_data.add_dependency(super_class, DependencyLevel::Include);
             parent_class_name = get_native_class_name(super_class);
         }
         else
         {
             parent_class_name = STR("UObjectBaseUtility");
-        }
-
-        if (super_class)
-        {
-            header_data.add_dependency(super_class, DependencyLevel::Include);
         }
 
         std::wstring interface_list_string;
@@ -1024,10 +1020,7 @@ namespace RC::UEGenerator
         }
 
         auto function_flags = signature_function->GetFunctionFlags();
-        if ((function_flags & Unreal::FUNC_Delegate) == 0)
-        {
-            throw std::runtime_error(RC::fmt("Delegate Signature function %S is missing FUNC_Delegate flag", signature_function->GetName().c_str()));
-        }
+        assert(function_flags & Unreal::FUNC_Delegate);
 
         // TODO not particularly nice or reliable, but will do for now
         const bool is_sparse = signature_function->GetClassPrivate()->GetName() == STR("SparseDelegateFunction");
@@ -1035,17 +1028,13 @@ namespace RC::UEGenerator
         const bool is_multicast = (function_flags & Unreal::FUNC_MulticastDelegate) != 0;
         const bool declared_const = (function_flags & FUNC_Const) != 0;
 
-        const std::wstring delegate_type_name = get_native_delegate_type_name(signature_function, nullptr, true);
-        FProperty* return_value_property = signature_function->GetReturnProperty();
-
-        std::wstring delegate_macro_string;
+        auto delegate_type_name = get_native_delegate_type_name(signature_function, nullptr, true);
+        auto return_value_property = signature_function->GetReturnProperty();
 
         // Delegate macro declaration is only allowed on the top level delegates, class-based types are limited to being implicit
         if (signature_function->GetOuterPrivate()->IsA<UPackage>())
         {
-            delegate_macro_string.append(STR("UDELEGATE("));
-            delegate_macro_string.append(generate_function_flags(signature_function));
-            delegate_macro_string.append(STR(") "));
+            header_data.format_line(STR("UDELEGATE({})"), generate_function_flags(signature_function));
         }
 
         PropertyTypeDeclarationContext context(delegate_type_name, &header_data);
@@ -1070,20 +1059,17 @@ namespace RC::UEGenerator
             return_value_declaration.append(STR(", "));
         }
 
-        std::wstring delegate_declaration_string = fmt::format(STR("{}DECLARE_DYNAMIC{}{}_DELEGATE{}{}{}({}{}{}{});"),
-                                                               delegate_macro_string,
-                                                               is_multicast ? STR("_MULTICAST") : STR(""),
-                                                               is_sparse ? STR("_SPARSE") : STR(""),
-                                                               return_value_property ? STR("_RetVal") : STR(""),
-                                                               generate_parameter_count_string(num_delegate_parameters),
-                                                               declared_const ? STR("_Const") : STR(""),
-                                                               return_value_declaration,
-                                                               delegate_type_name,
-                                                               // TODO: Actually get delegate property name.
-                                                               is_sparse ? fmt::format(STR("{}, {}"), owning_class, STR("EnterPropertyName")) : STR(""),
-                                                               delegate_parameter_list);
-
-        header_data.append_line(delegate_declaration_string);
+        header_data.format_line(STR("DECLARE_DYNAMIC{}{}_DELEGATE{}{}{}({}{}{}{});"),
+                                is_multicast ? STR("_MULTICAST") : STR(""),
+                                is_sparse ? STR("_SPARSE") : STR(""),
+                                return_value_property ? STR("_RetVal") : STR(""),
+                                generate_parameter_count_string(num_delegate_parameters),
+                                declared_const ? STR("_Const") : STR(""),
+                                return_value_declaration,
+                                delegate_type_name,
+                                // TODO: Actually get delegate property name.
+                                is_sparse ? fmt::format(STR("{}, {}"), owning_class, STR("EnterPropertyName")) : STR(""),
+                                delegate_parameter_list);
     }
 
     auto UEHeaderGenerator::generate_object_implementation(UClass* uclass, GeneratedSourceFile& implementation_file) -> void
@@ -1113,6 +1099,9 @@ namespace RC::UEGenerator
 
         StringType constructor = fmt::format(STR("{}::{}({}{}"), class_native_name, class_native_name, constructor_args, constructor_postfix_string);
 
+        auto constructor_pos = implementation_file.current_position();
+        implementation_file.begin_indent_level();
+
         // subobject management
         auto const& dsos = m_default_subobjects[uclass];
         DefaultSubobjects empty_dsos;
@@ -1140,9 +1129,8 @@ namespace RC::UEGenerator
                 fmt::format_to(std::back_inserter(constructor), STR(".SetDefaultSubobjectClass<{}>(TEXT(\"{}\"))"), get_native_class_name(dso_class), dso_name.ToString());
             }
         }
-        constructor.append(STR(") {"));
-        implementation_file.append_line(constructor);
-        implementation_file.begin_indent_level();
+        constructor.append(STR(") {\n"));
+        implementation_file.insert(constructor_pos, constructor);
 
         // Generate and initialize properties
         auto cdo = uclass->GetClassDefaultObject();
@@ -1867,7 +1855,7 @@ namespace RC::UEGenerator
         return uppercase_string;
     }
 
-    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<StringViewType>& out_module_dependencies, UPackage* package) -> void
+    auto UEHeaderGenerator::add_module_and_sub_module_dependencies(std::set<StringType>& out_module_dependencies, UPackage* package) -> void
     {
         if (!package) return;
         const auto iterator = m_module_dependencies.find(package);
@@ -3989,7 +3977,7 @@ namespace RC::UEGenerator
     {
         if (auto uclass = Cast<UClass>(object))
         {
-            if (uclass->IsA<UInterface>())
+            if (uclass->IsChildOf<UInterface>())
             {
                 decls.push_back(fmt::format(STR("class {};"), get_native_class_name(uclass, true)));
             }
@@ -4072,7 +4060,7 @@ namespace RC::UEGenerator
         auto module_name = get_module_name_for_package(package);
         auto object_name = object->GetName();
         auto fallback_name = get_file_base_name_for_object(object);
-        return fmt::format(STR("//CROSS-MODULE INCLUDE V2: -ModuleName={} -ObjectName={} -FallbackName={}\n"), module_name, object_name, fallback_name);
+        return fmt::format(STR("//CROSS-MODULE INCLUDE V2: -ModuleName={} -ObjectName={} -FallbackName={}"), module_name, object_name, fallback_name);
     }
 
     GeneratedFile::GeneratedFile(const FFilePath& full_file_path)
@@ -4275,7 +4263,7 @@ namespace RC::UEGenerator
         }
         if (!pre_decls.empty())
         {
-            out += '\n';
+            if (!out.empty()) out += '\n';
             for (const auto& decl : pre_decls)
             {
                 fmt::format_to(std::back_inserter(out), STR("{}\n"), decl);
