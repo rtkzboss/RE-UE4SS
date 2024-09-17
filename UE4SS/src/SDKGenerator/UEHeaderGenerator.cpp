@@ -1512,9 +1512,11 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::generate_property_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void
     {
         static FName NAME_NativeClass{STR("NativeClass"), FNAME_Add};
-        //static FName NAME_hudClass{STR("hudClass"), FNAME_Add};
         FName property_name = property->GetFName();
-        if (property_name == NAME_NativeClass || /*property_name == NAME_hudClass || */ignore_default.includes(property)) return;
+        if (property_name == NAME_NativeClass || ignore_default.includes(property)) return;
+
+        auto it = property_element_setters().find(property);
+        auto setter = it != property_element_setters().end() ? it->second : &UEHeaderGenerator::generate_property_element_assignment;
 
         auto ptr = static_cast<char const*>(data);
         auto arch_ptr = static_cast<char const*>(arch_data);
@@ -1523,7 +1525,7 @@ namespace RC::UEGenerator
             if (!write_defaults && is_default_value(property, ptr, arch_ptr)) continue;
 
             property_scope.push(property, index);
-            generate_property_element_assignment(this_struct, property, ptr, arch_ptr, implementation_file, property_scope, write_defaults);
+            (this->*setter)(this_struct, property, ptr, arch_ptr, implementation_file, property_scope, write_defaults);
             property_scope.pop();
 
             ptr += property->GetElementSize();
@@ -3329,6 +3331,11 @@ namespace RC::UEGenerator
         return fmt::format(STR("{}::RequestGameplayTag(TEXT(\"{}\"))"), native_name, tag_name.ToString());
     }
 
+    auto UEHeaderGenerator::generate_env_query_test_work_on_float_values_element_assignment(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        auto value = generate_property_value(self, property, data, file);
+        file.format_line(STR("SetWorkOnFloatValues({})"), value);
+    }
     auto UEHeaderGenerator::struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&
     {
         static std::unordered_map<FName, StructValueGenerator> generators;
@@ -3341,6 +3348,17 @@ namespace RC::UEGenerator
             generators.insert({FName(STR("GameplayTag"), FNAME_Add), &generate_struct_gameplay_tag});
         }
         return generators;
+    }
+    auto UEHeaderGenerator::property_element_setters() -> std::unordered_map<FProperty*, PropertyElementSetter> const&
+    {
+        static std::unordered_map<FProperty*, PropertyElementSetter> setters;
+        if (setters.empty())
+        {
+            auto EnvQueryTest = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.EnvQueryTest"));
+            auto EnvQueryTest_bWorkOnFloatValues = EnvQueryTest->GetPropertyByName(STR("bWorkOnFloatValues"));
+            setters.insert({EnvQueryTest_bWorkOnFloatValues, &generate_env_query_test_work_on_float_values_element_assignment});
+        }
+        return setters;
     }
     auto UEHeaderGenerator::generate_default_property_value(UStruct* this_struct, FProperty* property, GeneratedSourceFile& header_data) -> StringType
     {

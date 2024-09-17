@@ -367,11 +367,13 @@ namespace RC::UEGenerator
     };
 
     using StructValueGenerator = auto (UEHeaderGenerator::*)(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+    using PropertyElementSetter = auto (UEHeaderGenerator::*)(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
 
     class UEHeaderGenerator
     {
       private:
         static auto struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&;
+        static auto property_element_setters() -> std::unordered_map<FProperty*, PropertyElementSetter> const&;
 
         FFilePath m_root_directory;
         StringType m_primary_module_name;
@@ -456,6 +458,7 @@ namespace RC::UEGenerator
         auto generate_property_assignment_in_container(UStruct* this_struct, FProperty* property, void const* object, void const* archetype, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
         auto generate_property_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
         auto generate_property_element_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
+        auto generate_env_query_test_work_on_float_values_element_assignment(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
         auto generate_function_implementation(UClass* uclass,
                                               UFunction* function,
                                               GeneratedSourceFile& implementation_file,
