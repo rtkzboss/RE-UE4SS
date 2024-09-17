@@ -3185,24 +3185,7 @@ namespace RC::UEGenerator
                 return (this->*it->second)(this_struct, native_name, prop, data, implementation_file);
             }
 
-            auto arch_data = get_default_object(script_struct);
-            if (is_default_value(property, data, arch_data))
-            {
-                return fmt::format(STR("{}{{}}"), native_name);
-            }
-
-            auto id = implementation_file.gen_id();
-            auto root = fmt::format(STR("gen{}"), id);
-            implementation_file.format_line(STR("{} {};"), native_name, root);
-            PropertyScope property_scope{root};
-            for (auto st = script_struct; st; st = st->GetSuperScriptStruct())
-            {
-                for (FProperty* child_prop : st->ForEachProperty())
-                {
-                    generate_property_assignment_in_container(this_struct, child_prop, data, arch_data, implementation_file, property_scope, true);
-                }
-            }
-            return fmt::format(STR("MoveTemp({})"), root);
+            return generate_struct_generic(this_struct, native_name, prop, data, implementation_file);
         }
         if (auto prop = CastField<FArrayProperty>(property))
         {
@@ -3304,6 +3287,28 @@ namespace RC::UEGenerator
         Output::send<LogLevel::Warning>(STR("Unhandled property {}\n"), property->GetFullName());
         return STR("{}");
     }
+    auto UEHeaderGenerator::generate_struct_generic(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        auto arch_data = get_default_object(ustruct);
+        if (is_default_value(prop, data, arch_data))
+        {
+            return fmt::format(STR("{}{{}}"), native_name);
+        }
+
+        auto id = file.gen_id();
+        auto root = fmt::format(STR("gen{}"), id);
+        file.format_line(STR("{} {};"), native_name, root);
+        PropertyScope property_scope{root};
+        for (auto st = ustruct; st; st = st->GetSuperScriptStruct())
+        {
+            for (FProperty* child_prop : st->ForEachProperty())
+            {
+                generate_property_assignment_in_container(self, child_prop, data, arch_data, file, property_scope, true);
+            }
+        }
+        return fmt::format(STR("{}"), root);
+    }
     auto UEHeaderGenerator::generate_struct_Transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
     {
         auto& value = *const_cast<FTransform*>(static_cast<FTransform const*>(data));
@@ -3371,6 +3376,87 @@ namespace RC::UEGenerator
         }
         }
     }
+    namespace ESlateColorStylingMode
+    {
+        enum Type
+        {
+            UseColor_Specified,
+            UseColor_Specified_Link,
+            UseColor_Foreground,
+            UseColor_Foreground_Subdued,
+        };
+    }
+    auto UEHeaderGenerator::generate_struct_SlateColor(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        static auto prop_SpecifiedColor = CastField<FStructProperty>(ustruct->GetPropertyByName(STR("SpecifiedColor")));
+        static auto prop_ColorUseRule = CastField<FByteProperty>(ustruct->GetPropertyByName(STR("ColorUseRule")));
+        //auto tag_name = generate_property_element_value(self, prop_TagName, prop_TagName->ContainerPtrToValuePtr<void>(data), file);
+        auto color_use_rule = prop_ColorUseRule->GetPropertyValueInContainer(data);
+        switch (color_use_rule)
+        {
+        case ESlateColorStylingMode::UseColor_Specified: {
+            auto color = generate_property_value(self, prop_SpecifiedColor, prop_SpecifiedColor->ContainerPtrToValuePtr<void>(data), file);
+            return fmt::format(STR("FSlateColor({})"), color);
+        }
+        case ESlateColorStylingMode::UseColor_Foreground:
+            return STR("FSlateColor::UseForeground()");
+        case ESlateColorStylingMode::UseColor_Foreground_Subdued:
+            return STR("FSlateColor::UseSubduedForeground()");
+        default:
+            return generate_struct_generic(self, native_name, prop, data, file);
+        }
+    }
+    auto UEHeaderGenerator::generate_struct_TRange(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        auto prop_LowerBound = CastField<FStructProperty>(ustruct->GetPropertyByName(STR("LowerBound")));
+        auto prop_UpperBound = CastField<FStructProperty>(ustruct->GetPropertyByName(STR("UpperBound")));
+        auto lower = generate_property_value(self, prop_LowerBound, prop_LowerBound->ContainerPtrToValuePtr<void>(data), file);
+        auto upper = generate_property_value(self, prop_UpperBound, prop_UpperBound->ContainerPtrToValuePtr<void>(data), file);
+        return fmt::format(STR("{}({}, {})"), native_name, lower, upper);
+    }
+    namespace ERangeBoundTypes
+    {
+        enum Type
+        {
+            Exclusive,
+            Inclusive,
+            Open
+        };
+    }
+    auto UEHeaderGenerator::generate_struct_TRangeBound(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        auto prop_Type = CastField<FByteProperty>(ustruct->GetPropertyByName(STR("Type")));
+        auto prop_Value = CastField<FProperty>(ustruct->GetPropertyByName(STR("Value")));
+        auto type = prop_Type->GetPropertyValueInContainer(data);
+        auto value = generate_property_value(self, prop_Value, prop_Value->ContainerPtrToValuePtr<void>(data), file);
+        switch (type)
+        {
+        case ERangeBoundTypes::Open:
+            return fmt::format(STR("{}::Open()"), native_name);
+        case ERangeBoundTypes::Inclusive:
+            return fmt::format(STR("{}::Inclusive({})"), native_name, value);
+        case ERangeBoundTypes::Exclusive:
+            return fmt::format(STR("{}::Exclusive({})"), native_name, value);
+        default:
+            abort();
+        }
+    }
+    auto UEHeaderGenerator::generate_struct_LinearColor(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        static auto prop_R = CastField<FFloatProperty>(ustruct->GetPropertyByName(STR("R")));
+        static auto prop_G = CastField<FFloatProperty>(ustruct->GetPropertyByName(STR("G")));
+        static auto prop_B = CastField<FFloatProperty>(ustruct->GetPropertyByName(STR("B")));
+        static auto prop_A = CastField<FFloatProperty>(ustruct->GetPropertyByName(STR("A")));
+        auto r = prop_R->GetPropertyValueInContainer(data);
+        auto g = prop_G->GetPropertyValueInContainer(data);
+        auto b = prop_B->GetPropertyValueInContainer(data);
+        auto a = prop_A->GetPropertyValueInContainer(data);
+        return fmt::format(STR("{}({:.9e}f, {:.9e}f, {:.9e}f, {:.9e}f)"), native_name, r, g, b, a);
+    }
     auto UEHeaderGenerator::struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&
     {
         static std::unordered_map<FName, StructValueGenerator> generators;
@@ -3382,6 +3468,24 @@ namespace RC::UEGenerator
             generators.insert({FName(STR("FrameTime"), FNAME_Add), &generate_struct_FrameTime});
             generators.insert({FName(STR("GameplayTag"), FNAME_Add), &generate_struct_GameplayTag});
             generators.insert({FName(STR("GameplayTagContainer"), FNAME_Add), &generate_struct_GameplayTagContainer});
+            generators.insert({FName(STR("SlateColor"), FNAME_Add), &generate_struct_SlateColor});
+            generators.insert({FName(STR("DateRange"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("DateRangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("DoubleRange"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("DoubleRangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("FloatRange"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("FloatRangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("Int8Range"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("Int8RangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("Int16Range"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("Int16RangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("Int32Range"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("Int32RangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("Int64Range"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("Int64RangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("FrameNumberRange"), FNAME_Add), &generate_struct_TRange});
+            generators.insert({FName(STR("FrameNumberRangeBound"), FNAME_Add), &generate_struct_TRangeBound});
+            generators.insert({FName(STR("LinearColor"), FNAME_Add), &generate_struct_LinearColor});
         }
         return generators;
     }
@@ -3389,6 +3493,10 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::generate_EnvQueryTest_bWorkOnFloatValues(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
         generate_property_element_call(STR("SetWorkOnFloatValues"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_PrimitiveComponent_bGenerateOverlapEvents(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetGenerateOverlapEvents"), self, property, data, arch_data, file, scope, write_defaults);
     }
     auto UEHeaderGenerator::generate_ActorComponent_bReplicates(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
@@ -3410,6 +3518,18 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::generate_Actor_RemoteRole(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
         generate_property_element_call(STR("SetRemoteRoleForBackwardsCompat"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_CharacterMovementComponent_WalkableFloorAngle(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetWalkableFloorAngle"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_CharacterMovementComponent_WalkableFloorZ(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetWalkableFloorZ"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_SplineComponent_bClosedLoop(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetClosedLoop"), self, property, data, arch_data, file, scope, write_defaults);
     }
     auto UEHeaderGenerator::generate_Actor_ReplicatedMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
@@ -3435,6 +3555,16 @@ namespace RC::UEGenerator
 
             auto ActorComponent = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.ActorComponent"));
             setters.insert({ActorComponent->GetPropertyByName(STR("bReplicates")), &generate_ActorComponent_bReplicates});
+            
+            auto PrimitiveComponent = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.PrimitiveComponent"));
+            setters.insert({PrimitiveComponent->GetPropertyByName(STR("bGenerateOverlapEvents")), &generate_PrimitiveComponent_bGenerateOverlapEvents});
+            
+            auto SplineComponent = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.SplineComponent"));
+            setters.insert({SplineComponent->GetPropertyByName(STR("bClosedLoop")), &generate_SplineComponent_bClosedLoop});
+            
+            auto CharacterMovementComponent = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.CharacterMovementComponent"));
+            setters.insert({CharacterMovementComponent->GetPropertyByName(STR("WalkableFloorAngle")), &generate_CharacterMovementComponent_WalkableFloorAngle});
+            setters.insert({CharacterMovementComponent->GetPropertyByName(STR("WalkableFloorZ")), &generate_CharacterMovementComponent_WalkableFloorZ});
 
             auto Actor = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.Actor"));
             setters.insert({Actor->GetPropertyByName(STR("bCanBeDamaged")), &generate_Actor_bCanBeDamaged});
