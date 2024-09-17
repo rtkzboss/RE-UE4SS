@@ -212,26 +212,6 @@ namespace RC::UEGenerator
                    return std::pair(key, static_cast<void const*>(static_cast<char const*>(key) + value_offset));
                });
     }
-    static auto is_struct_transform(UStruct* ustruct) -> bool
-    {
-        static FName NAME_Transform{STR("Transform"), FNAME_Add};
-        return ustruct->GetNamePrivate() == NAME_Transform;
-    }
-    static auto is_struct_soft_path(UStruct* ustruct) -> bool
-    {
-        static FName NAME_SoftObjectPath{STR("SoftObjectPath"), FNAME_Add};
-        static FName NAME_SoftClassPath{STR("SoftClassPath"), FNAME_Add};
-        return ustruct->GetNamePrivate() == NAME_SoftObjectPath || ustruct->GetNamePrivate() == NAME_SoftClassPath;
-    }
-    static auto is_struct_frame_time(UStruct* ustruct) -> bool
-    {
-        static FName NAME_FrameTime{STR("FrameTime"), FNAME_Add};
-        return ustruct->GetNamePrivate() == NAME_FrameTime;
-    }
-    static auto is_struct_atomic(UStruct* ustruct) -> bool
-    {
-        return is_struct_transform(ustruct) || is_struct_soft_path(ustruct) || is_struct_frame_time(ustruct);
-    }
 
     class FlagFormatHelper
     {
@@ -1566,7 +1546,7 @@ namespace RC::UEGenerator
         if (auto prop = CastField<FStructProperty>(property))
         {
             auto script_struct = prop->GetStruct();
-            if (!is_struct_atomic(script_struct))
+            if (!struct_generators().contains(script_struct->GetNamePrivate()))
             {
                 for (auto st = script_struct; st; st = st->GetSuperScriptStruct())
                 {
@@ -3174,32 +3154,12 @@ namespace RC::UEGenerator
         {
             auto script_struct = prop->GetStruct();
             auto native_name = get_native_struct_name(script_struct);
-            if (is_struct_transform(script_struct))
+            implementation_file.add_dependency(script_struct, DependencyLevel::Include);
+
+            auto it = struct_generators().find(script_struct->GetNamePrivate());
+            if (it != struct_generators().end())
             {
-                auto& value = *const_cast<FTransform*>(static_cast<FTransform const*>(data));
-                auto& rot = value.GetRotation();
-                auto& trans = value.GetTranslation();
-                auto& scale = value.GetScale3D();
-                return fmt::format(STR("{}(FQuat({:.9e},{:.9e},{:.9e},{:.9e}), FVector({:.9e},{:.9e},{:.9e}), FVector({:.9e},{:.9e},{:.9e}))"),
-                                   native_name,
-                                   rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW(),
-                                   trans.GetX(), trans.GetY(), trans.GetZ(),
-                                   scale.GetX(), scale.GetY(), scale.GetZ());
-            }
-            if (is_struct_soft_path(script_struct))
-            {
-                auto& value = *static_cast<FSoftObjectPath const*>(data);
-                return generate_soft_path(native_name, value);
-            }
-            if (is_struct_frame_time(script_struct))
-            {
-                struct FFrameTime
-                {
-                    int32 FrameNumber;
-                    float SubFrame;
-                };
-                auto& value = *static_cast<FFrameTime const*>(data);
-                return fmt::format(STR("{}({}, {:.9e})"), native_name, value.FrameNumber, value.SubFrame);
+                return (this->*it->second)(this_struct, native_name, prop, data, implementation_file);
             }
 
             auto arch_data = get_default_object(script_struct);
@@ -3208,7 +3168,6 @@ namespace RC::UEGenerator
                 return fmt::format(STR("{}{{}}"), native_name);
             }
 
-            implementation_file.add_dependency(script_struct, DependencyLevel::Include);
             auto id = implementation_file.gen_id();
             auto root = fmt::format(STR("gen{}"), id);
             implementation_file.format_line(STR("{} {};"), native_name, root);
@@ -3321,6 +3280,67 @@ namespace RC::UEGenerator
         }
         Output::send<LogLevel::Warning>(STR("Unhandled property {}\n"), property->GetFullName());
         return STR("{}");
+    }
+    auto UEHeaderGenerator::generate_struct_transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto& value = *const_cast<FTransform*>(static_cast<FTransform const*>(data));
+        auto& rot = value.GetRotation();
+        auto& trans = value.GetTranslation();
+        auto& scale = value.GetScale3D();
+        return fmt::format(STR("{}(FQuat({:.9e},{:.9e},{:.9e},{:.9e}), FVector({:.9e},{:.9e},{:.9e}), FVector({:.9e},{:.9e},{:.9e}))"),
+                           native_name,
+                           rot.GetX(),
+                           rot.GetY(),
+                           rot.GetZ(),
+                           rot.GetW(),
+                           trans.GetX(),
+                           trans.GetY(),
+                           trans.GetZ(),
+                           scale.GetX(),
+                           scale.GetY(),
+                           scale.GetZ());
+    }
+    auto UEHeaderGenerator::generate_struct_soft_path(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto& value = *static_cast<FSoftObjectPath const*>(data);
+        return generate_soft_path(native_name, value);
+    }
+    auto UEHeaderGenerator::generate_struct_frame_time(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        static auto prop_FrameNumber = CastField<FStructProperty>(ustruct->GetPropertyByName(STR("FrameNumber")));
+        static auto prop_FrameNumber_Value = CastField<FIntProperty>(prop_FrameNumber->GetStruct()->GetPropertyByName(STR("Value")));
+        static auto prop_SubFrame = CastField<FFloatProperty>(ustruct->GetPropertyByName(STR("SubFrame")));
+        return fmt::format(STR("{}({}, {:.9e})"),
+            native_name,
+            prop_FrameNumber_Value->GetPropertyValueInContainer(prop_FrameNumber->ContainerPtrToValuePtr<void>(data)),
+            prop_SubFrame->GetPropertyValueInContainer(data));
+    }
+    auto UEHeaderGenerator::generate_struct_gameplay_tag(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        static auto prop_TagName = CastField<FNameProperty>(ustruct->GetPropertyByName(STR("TagName")));
+        //auto tag_name = generate_property_element_value(self, prop_TagName, prop_TagName->ContainerPtrToValuePtr<void>(data), file);
+        auto tag_name = prop_TagName->GetPropertyValueInContainer(data);
+        if (tag_name == NAME_None)
+        {
+            return fmt::format(STR("{}()"), native_name);
+        }
+        return fmt::format(STR("{}::RequestGameplayTag(TEXT(\"{}\"))"), native_name, tag_name.ToString());
+    }
+
+    auto UEHeaderGenerator::struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&
+    {
+        static std::unordered_map<FName, StructValueGenerator> generators;
+        if (generators.empty())
+        {
+            generators.insert({FName(STR("Transform"), FNAME_Add), &generate_struct_transform});
+            generators.insert({FName(STR("SoftObjectPath"), FNAME_Add), &generate_struct_soft_path});
+            generators.insert({FName(STR("SoftClassPath"), FNAME_Add), &generate_struct_soft_path});
+            generators.insert({FName(STR("FrameTime"), FNAME_Add), &generate_struct_frame_time});
+            generators.insert({FName(STR("GameplayTag"), FNAME_Add), &generate_struct_gameplay_tag});
+        }
+        return generators;
     }
     auto UEHeaderGenerator::generate_default_property_value(UStruct* this_struct, FProperty* property, GeneratedSourceFile& header_data) -> StringType
     {

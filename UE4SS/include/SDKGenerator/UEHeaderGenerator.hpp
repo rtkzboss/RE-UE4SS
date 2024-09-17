@@ -24,6 +24,7 @@ namespace RC::Unreal
     class UPackage;
     class FProperty;
     class FNumericProperty;
+    class FStructProperty;
     class UClass;
     class FField;
     class UEnum;
@@ -41,6 +42,7 @@ namespace RC::UEGenerator
     using FNumericProperty = RC::Unreal::FNumericProperty;
     using FObjectProperty = RC::Unreal::FObjectProperty;
     using FSoftObjectPath = RC::Unreal::FSoftObjectPath;
+    using FStructProperty = RC::Unreal::FStructProperty;
     using FField = RC::Unreal::FField;
     using UEnum = RC::Unreal::UEnum;
     using UScriptStruct = RC::Unreal::UScriptStruct;
@@ -364,9 +366,13 @@ namespace RC::UEGenerator
         auto includes(FProperty* prop) const -> bool;
     };
 
+    using StructValueGenerator = auto (UEHeaderGenerator::*)(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+
     class UEHeaderGenerator
     {
       private:
+        static auto struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&;
+
         FFilePath m_root_directory;
         StringType m_primary_module_name;
         UPackage* m_primary_module;
@@ -476,6 +482,10 @@ namespace RC::UEGenerator
         auto is_default_value(FProperty* prop, void const* object, void const* archetype) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
         auto generate_soft_path(StringViewType kind, FSoftObjectPath const& path) -> StringType;
+        auto generate_struct_transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_soft_path(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_frame_time(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_gameplay_tag(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
         auto generate_object_finder(UClass* class_, StringViewType path, GeneratedSourceFile& implementation_file, bool is_class) -> StringType;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value, GeneratedSourceFile& implementation_file) -> StringType;
 
