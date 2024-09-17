@@ -235,6 +235,10 @@ namespace RC::UEGenerator
         FProperty* prop;
         int32_t index;
     };
+    struct CustomMemberAccess
+    {
+        CharType const* member;
+    };
     struct ArrayAccess
     {
         int32_t index;
@@ -244,18 +248,19 @@ namespace RC::UEGenerator
         FProperty* key_prop;
         void const* key;
     };
-    using PropertySpec = std::variant<PropertyAccess, ArrayAccess>;
+    using PropertySpec = std::variant<PropertyAccess, CustomMemberAccess>;
     class PropertyScope
     {
         StringViewType m_root;
-        std::vector<std::tuple<FProperty*, int32_t>> m_elements;
+        std::vector<PropertySpec> m_elements;
 
       public:
         PropertyScope(StringViewType root);
         PropertyScope();
         auto pop() -> void;
         auto push(FProperty* prop, int32_t index) -> void;
-        auto push_array(int32_t index) -> void;
+        auto push(CharType const* custom) -> void;
+        //auto push_array(int32_t index) -> void;
         auto access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> StringType;
         //auto assign(UStruct* this_struct, StringViewType value, GeneratedSourceFile& implementation_file) const -> StringType;
     };
@@ -457,8 +462,15 @@ namespace RC::UEGenerator
         auto generate_default_property_element_value(UStruct* this_struct, FProperty* property, GeneratedSourceFile& implementation_file) -> StringType;
         auto generate_property_assignment_in_container(UStruct* this_struct, FProperty* property, void const* object, void const* archetype, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
         auto generate_property_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
+        auto generate_property_element_call(CharType const* function_name, UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
         auto generate_property_element_assignment(UStruct* this_struct, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& implementation_file, PropertyScope& property_scope, bool write_defaults) -> void;
-        auto generate_env_query_test_work_on_float_values_element_assignment(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_EnvQueryTest_bWorkOnFloatValues(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_ActorComponent_bReplicates(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_Actor_bCanBeDamaged(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_Actor_bHidden(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_Actor_bReplicateMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_Actor_ReplicatedMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_Actor_RemoteRole(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
         auto generate_function_implementation(UClass* uclass,
                                               UFunction* function,
                                               GeneratedSourceFile& implementation_file,
@@ -485,10 +497,11 @@ namespace RC::UEGenerator
         auto is_default_value(FProperty* prop, void const* object, void const* archetype) -> bool;
         auto get_default_object(UStruct* ustruct) -> void const*;
         auto generate_soft_path(StringViewType kind, FSoftObjectPath const& path) -> StringType;
-        auto generate_struct_transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
-        auto generate_struct_soft_path(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
-        auto generate_struct_frame_time(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
-        auto generate_struct_gameplay_tag(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_Transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_SoftPath(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_FrameTime(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_GameplayTag(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_GameplayTagContainer(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
         auto generate_object_finder(UClass* class_, StringViewType path, GeneratedSourceFile& implementation_file, bool is_class) -> StringType;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value, GeneratedSourceFile& implementation_file) -> StringType;
 

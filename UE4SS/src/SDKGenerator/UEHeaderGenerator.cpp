@@ -369,26 +369,34 @@ namespace RC::UEGenerator
     }
     auto PropertyScope::push(FProperty* prop, int32_t index) -> void
     {
-        m_elements.emplace_back(prop, prop->GetArrayDim() == 1 ? -1 : index);
+        m_elements.emplace_back(PropertyAccess{prop, prop->GetArrayDim() == 1 ? -1 : index});
     }
-    auto PropertyScope::push_array(int32_t index) -> void
+    auto PropertyScope::push(CharType const* custom_member) -> void
     {
-        m_elements.emplace_back(nullptr, index);
+        m_elements.emplace_back(CustomMemberAccess{custom_member});
     }
+    //auto PropertyScope::push_array(int32_t index) -> void
+    //{
+    //    m_elements.emplace_back(nullptr, index);
+    //}
     static auto generate_find_property(FProperty* prop, GeneratedSourceFile& implementation_file) -> StringType
     {
         auto owner = prop->GetOutermostOwner();
         if (auto owner_class = Cast<UClass>(owner); owner_class && owner_class->HasAnyClassFlags(CLASS_Native))
         {
             implementation_file.add_dependency(owner_class, DependencyLevel::Include);
-            return fmt::format(STR("{}::StaticClass()->FindPropertyByName(\"{}\")"), get_native_class_name(owner_class), prop->GetName());
+            auto native_name = get_native_class_name(owner_class);
+            return fmt::format(STR("{}::StaticClass()->FindPropertyByName(\"{}\")"), native_name, prop->GetName());
+            //return fmt::format(STR("{}::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED({}, {}))"), native_name, native_name, prop->GetName());
         }
         static UClass* UUserDefinedStruct_StaticClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.UserDefinedStruct"));
         // NoExport structs don't have STRUCT_Native...
         if (auto owner_struct = Cast<UScriptStruct>(owner); owner_struct && !owner_struct->IsA(UUserDefinedStruct_StaticClass))
         {
             implementation_file.add_dependency(owner_struct, DependencyLevel::Include);
-            return fmt::format(STR("TBaseStructure<{}>::Get()->FindPropertyByName(\"{}\")"), get_native_struct_name(owner_struct), prop->GetName());
+            auto native_name = get_native_struct_name(owner_struct);
+            return fmt::format(STR("TBaseStructure<{}>::Get()->FindPropertyByName(\"{}\")"), native_name, prop->GetName());
+            //return fmt::format(STR("TBaseStructure<{}>::Get()->FindPropertyByName(GET_MEMBER_NAME_CHECKED({}, {}))"), native_name, native_name, prop->GetName());
         }
         Output::send<LogLevel::Error>(STR("Unimplemented advanced access for {}\n"), owner->GetFullName());
         return fmt::format(STR("/*{}*/"), prop->GetFullName());
@@ -406,25 +414,38 @@ namespace RC::UEGenerator
     auto PropertyScope::access(UStruct* this_struct, GeneratedSourceFile& implementation_file) const -> StringType
     {
         StringType out{m_root};
-        for (auto [prop, index] : m_elements)
+        for (auto const& el : m_elements)
         {
-            if (prop && UEHeaderGenerator::needs_advanced_access(this_struct, prop))
+            if (auto p = std::get_if<PropertyAccess>(&el))
             {
-                int32_t i = index == -1 ? 0 : index;
-                auto prop_str = implementation_file.generate_cons_property(prop);
-                out = fmt::format(STR("(*{}->ContainerPtrToValuePtr<{}>(&{}, {}))"), prop_str, generate_property_cxx_name(prop, true, this_struct), out, i);
+                auto [prop, index] = *p;
+                if (prop && UEHeaderGenerator::needs_advanced_access(this_struct, prop))
+                {
+                    int32_t i = index == -1 ? 0 : index;
+                    auto prop_str = implementation_file.generate_cons_property(prop);
+                    out = fmt::format(STR("(*{}->ContainerPtrToValuePtr<{}>(&{}, {}))"), prop_str, generate_property_cxx_name(prop, true, this_struct), out, i);
+                }
+                else
+                {
+                    if (prop)
+                    {
+                        out += '.';
+                        write_property_name(out, prop);
+                    }
+                    if (index != -1)
+                    {
+                        fmt::format_to(std::back_inserter(out), "[{}]", index);
+                    }
+                }
+            }
+            else if (auto p = std::get_if<CustomMemberAccess>(&el))
+            {
+                out += '.';
+                out += p->member;
             }
             else
             {
-                if (prop)
-                {
-                    out.push_back('.');
-                    write_property_name(out, prop);
-                }
-                if (index != -1)
-                {
-                    fmt::format_to(std::back_inserter(out), "[{}]", index);
-                }
+                abort();
             }
         }
         return out;
@@ -3283,7 +3304,7 @@ namespace RC::UEGenerator
         Output::send<LogLevel::Warning>(STR("Unhandled property {}\n"), property->GetFullName());
         return STR("{}");
     }
-    auto UEHeaderGenerator::generate_struct_transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    auto UEHeaderGenerator::generate_struct_Transform(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
     {
         auto& value = *const_cast<FTransform*>(static_cast<FTransform const*>(data));
         auto& rot = value.GetRotation();
@@ -3302,12 +3323,12 @@ namespace RC::UEGenerator
                            scale.GetY(),
                            scale.GetZ());
     }
-    auto UEHeaderGenerator::generate_struct_soft_path(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    auto UEHeaderGenerator::generate_struct_SoftPath(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
     {
         auto& value = *static_cast<FSoftObjectPath const*>(data);
         return generate_soft_path(native_name, value);
     }
-    auto UEHeaderGenerator::generate_struct_frame_time(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    auto UEHeaderGenerator::generate_struct_FrameTime(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
     {
         auto ustruct = prop->GetStruct();
         static auto prop_FrameNumber = CastField<FStructProperty>(ustruct->GetPropertyByName(STR("FrameNumber")));
@@ -3318,7 +3339,7 @@ namespace RC::UEGenerator
             prop_FrameNumber_Value->GetPropertyValueInContainer(prop_FrameNumber->ContainerPtrToValuePtr<void>(data)),
             prop_SubFrame->GetPropertyValueInContainer(data));
     }
-    auto UEHeaderGenerator::generate_struct_gameplay_tag(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    auto UEHeaderGenerator::generate_struct_GameplayTag(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
     {
         auto ustruct = prop->GetStruct();
         static auto prop_TagName = CastField<FNameProperty>(ustruct->GetPropertyByName(STR("TagName")));
@@ -3330,24 +3351,79 @@ namespace RC::UEGenerator
         }
         return fmt::format(STR("{}::RequestGameplayTag(TEXT(\"{}\"))"), native_name, tag_name.ToString());
     }
-
-    auto UEHeaderGenerator::generate_env_query_test_work_on_float_values_element_assignment(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    auto UEHeaderGenerator::generate_struct_GameplayTagContainer(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
     {
-        auto value = generate_property_value(self, property, data, file);
-        file.format_line(STR("SetWorkOnFloatValues({})"), value);
+        auto ustruct = prop->GetStruct();
+        static auto prop_GameplayTags = CastField<FArrayProperty>(ustruct->GetPropertyByName(STR("GameplayTags")));
+        //auto tag_name = generate_property_element_value(self, prop_TagName, prop_TagName->ContainerPtrToValuePtr<void>(data), file);
+        auto gameplay_tags = prop_GameplayTags->ContainerPtrToValuePtr<FScriptArray>(data);
+        switch (gameplay_tags->Num())
+        {
+        case 0:
+            return fmt::format(STR("{}()"), native_name);
+        case 1: {
+            auto single_tag = generate_property_value(self, prop_GameplayTags->GetInner(), gameplay_tags->GetData(), file);
+            return fmt::format(STR("{}.GetSingleTagContainer()"), single_tag);
+        }
+        default: {
+            auto elements = generate_property_value(self, prop_GameplayTags, gameplay_tags, file);
+            return fmt::format(STR("{}::CreateFromArray({})"), native_name, elements);
+        }
+        }
     }
     auto UEHeaderGenerator::struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&
     {
         static std::unordered_map<FName, StructValueGenerator> generators;
         if (generators.empty())
         {
-            generators.insert({FName(STR("Transform"), FNAME_Add), &generate_struct_transform});
-            generators.insert({FName(STR("SoftObjectPath"), FNAME_Add), &generate_struct_soft_path});
-            generators.insert({FName(STR("SoftClassPath"), FNAME_Add), &generate_struct_soft_path});
-            generators.insert({FName(STR("FrameTime"), FNAME_Add), &generate_struct_frame_time});
-            generators.insert({FName(STR("GameplayTag"), FNAME_Add), &generate_struct_gameplay_tag});
+            generators.insert({FName(STR("Transform"), FNAME_Add), &generate_struct_Transform});
+            generators.insert({FName(STR("SoftObjectPath"), FNAME_Add), &generate_struct_SoftPath});
+            generators.insert({FName(STR("SoftClassPath"), FNAME_Add), &generate_struct_SoftPath});
+            generators.insert({FName(STR("FrameTime"), FNAME_Add), &generate_struct_FrameTime});
+            generators.insert({FName(STR("GameplayTag"), FNAME_Add), &generate_struct_GameplayTag});
+            generators.insert({FName(STR("GameplayTagContainer"), FNAME_Add), &generate_struct_GameplayTagContainer});
         }
         return generators;
+    }
+
+    auto UEHeaderGenerator::generate_EnvQueryTest_bWorkOnFloatValues(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetWorkOnFloatValues"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_ActorComponent_bReplicates(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetIsReplicated"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_Actor_bCanBeDamaged(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetCanBeDamaged"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_Actor_bHidden(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        // TODO: SetActorHiddenInGame?
+        generate_property_element_call(STR("SetHidden"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_Actor_bReplicateMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetReplicatingMovement"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_Actor_RemoteRole(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetRemoteRoleForBackwardsCompat"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_Actor_ReplicatedMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        scope.pop();
+        scope.push(STR("GetReplicatedMovement_Mutable()"));
+        generate_property_element_assignment(self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_property_element_call(CharType const* func_name, UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        scope.pop();
+        scope.push(func_name);
+        auto access = scope.access(self, file);
+        auto value = generate_property_value(self, property, data, file);
+        file.format_line(STR("{}({});"), access, value);
     }
     auto UEHeaderGenerator::property_element_setters() -> std::unordered_map<FProperty*, PropertyElementSetter> const&
     {
@@ -3355,8 +3431,17 @@ namespace RC::UEGenerator
         if (setters.empty())
         {
             auto EnvQueryTest = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.EnvQueryTest"));
-            auto EnvQueryTest_bWorkOnFloatValues = EnvQueryTest->GetPropertyByName(STR("bWorkOnFloatValues"));
-            setters.insert({EnvQueryTest_bWorkOnFloatValues, &generate_env_query_test_work_on_float_values_element_assignment});
+            setters.insert({EnvQueryTest->GetPropertyByName(STR("bWorkOnFloatValues")), &generate_EnvQueryTest_bWorkOnFloatValues});
+
+            auto ActorComponent = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.ActorComponent"));
+            setters.insert({ActorComponent->GetPropertyByName(STR("bReplicates")), &generate_ActorComponent_bReplicates});
+
+            auto Actor = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.Actor"));
+            setters.insert({Actor->GetPropertyByName(STR("bCanBeDamaged")), &generate_Actor_bCanBeDamaged});
+            setters.insert({Actor->GetPropertyByName(STR("bHidden")), &generate_Actor_bHidden});
+            setters.insert({Actor->GetPropertyByName(STR("bReplicateMovement")), &generate_Actor_bReplicateMovement});
+            setters.insert({Actor->GetPropertyByName(STR("RemoteRole")), &generate_Actor_RemoteRole});
+            setters.insert({Actor->GetPropertyByName(STR("ReplicatedMovement")), &generate_Actor_ReplicatedMovement});
         }
         return setters;
     }
