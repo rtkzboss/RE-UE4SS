@@ -185,7 +185,7 @@ namespace RC::UEGenerator
         auto start = static_cast<char const*>(array.GetData());
         auto size = inner_prop->GetSize();
         return std::views::iota(0, array.Num()) | std::views::transform([=](auto i) {
-                   return start + i * size;
+                   return static_cast<void const*>(start + i * size);
                });
     }
     static auto each_item(FScriptSet const& set, FProperty* element_prop)
@@ -923,7 +923,7 @@ namespace RC::UEGenerator
             }
             else
             {
-                PropertyTypeDeclarationContext context(native_enum_name, &header_data);
+                PropertyTypeDeclarationContext context(header_data);
                 std::wstring underlying_prop_string = generate_property_type_declaration(underlying_prop->second, context);
 
                 header_data.append_line(fmt::format(STR("enum class {} : {} {{"), native_enum_name, underlying_prop_string));
@@ -1033,11 +1033,11 @@ namespace RC::UEGenerator
             header_data.format_line(STR("UDELEGATE({})"), generate_function_flags(signature_function));
         }
 
-        PropertyTypeDeclarationContext context(delegate_type_name, &header_data, false, true);
+        PropertyTypeDeclarationContext context(header_data, false, true);
 
         int32_t num_delegate_parameters = 0;
         std::wstring delegate_parameter_list =
-                generate_function_parameter_list(nullptr, signature_function, header_data, true, context.context_name, {}, &num_delegate_parameters);
+                generate_function_parameter_list(nullptr, signature_function, header_data, true, {}, &num_delegate_parameters);
         if (num_delegate_parameters > 0)
         {
             delegate_parameter_list.insert(0, STR(", "));
@@ -1251,9 +1251,9 @@ namespace RC::UEGenerator
         auto property_flags = generate_property_flags(ustruct, property);
 
         bool is_bitmask_bool = false;
-        PropertyTypeDeclarationContext Context(ustruct->GetName(), &header_data, true, false, &is_bitmask_bool);
+        PropertyTypeDeclarationContext context(header_data, true, false, &is_bitmask_bool);
 
-        auto property_decl = generate_property_type_declaration(property, Context);
+        auto property_decl = generate_property_type_declaration(property, context);
         property_decl.append(STR(" "));
         write_property_name(property_decl, property);
         if (property->GetArrayDim() != 1)
@@ -1280,7 +1280,6 @@ namespace RC::UEGenerator
                                               bool generate_as_override) -> void
     {
         auto function_flags = function->GetFunctionFlags();
-        const std::wstring context_name = uclass->GetName();
         bool is_function_pure_virtual = generate_as_override;
 
         std::wstring function_modifier_string;
@@ -1301,7 +1300,7 @@ namespace RC::UEGenerator
         std::wstring return_property_string;
         if (return_property != NULL)
         {
-            PropertyTypeDeclarationContext context(uclass->GetName(), &header_data, false, true);
+            PropertyTypeDeclarationContext context(header_data, false, true);
             return_property_string = generate_property_type_declaration(return_property, context);
         }
         else
@@ -1330,7 +1329,7 @@ namespace RC::UEGenerator
             function_extra_postfix_string.append(fmt::format(STR(" PURE_VIRTUAL({},{})"), function->GetName(), return_statement_string));
         }
 
-        std::wstring function_argument_list = generate_function_parameter_list(uclass, function, header_data, false, context_name, blacklisted_parameter_names);
+        std::wstring function_argument_list = generate_function_parameter_list(uclass, function, header_data, false, blacklisted_parameter_names);
 
         const std::wstring function_flags_string = generate_function_flags(function, is_function_pure_virtual);
         header_data.append_line(fmt::format(STR("UFUNCTION({})"), function_flags_string));
@@ -1614,7 +1613,7 @@ namespace RC::UEGenerator
         const std::wstring class_native_name = get_native_class_name(uclass, is_generating_interface);
         const std::wstring raw_function_name = function->GetName();
         auto function_flags = function->GetFunctionFlags();
-        PropertyTypeDeclarationContext context(uclass->GetName(), &implementation_file, false, true);
+        PropertyTypeDeclarationContext context(implementation_file, false, true);
 
         std::wstring function_implementation_name;
         std::wstring net_validate_function_name;
@@ -1650,7 +1649,7 @@ namespace RC::UEGenerator
         if (!function_implementation_name.empty() || !net_validate_function_name.empty())
         {
             function_parameter_list =
-                    generate_function_parameter_list(uclass, function, implementation_file, false, context.context_name, blacklisted_parameter_names);
+                    generate_function_parameter_list(uclass, function, implementation_file, false, blacklisted_parameter_names);
         }
 
         if (!function_implementation_name.empty())
@@ -2106,10 +2105,7 @@ namespace RC::UEGenerator
             auto uenum = prop->GetEnum();
             if (uenum)
             {
-                if (context.source_file)
-                {
-                    context.source_file->add_dependency(uenum, DependencyLevel::Include);
-                }
+                context.source_file.add_dependency(uenum, DependencyLevel::Include);
                 auto enum_name = get_native_enum_name(uenum);
                 // see FByteProperty::GetCPPType
                 if (uenum->GetCppForm() == UEnum::ECppForm::EnumClass || context.is_parm && (prop->HasAnyPropertyFlags(CPF_ReturnParm) || !prop->HasAnyPropertyFlags(CPF_OutParm)))
@@ -2127,10 +2123,7 @@ namespace RC::UEGenerator
         {
             auto underlying_prop = prop->GetUnderlyingProperty();
             UEnum* uenum = prop->GetEnum();
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(uenum, DependencyLevel::Include);
-            }
+            context.source_file.add_dependency(uenum, DependencyLevel::Include);
             return get_native_enum_name(uenum);
         }
         if (auto prop = CastField<FBoolProperty>(property))
@@ -2190,12 +2183,9 @@ namespace RC::UEGenerator
                 return STR("UClass*");
             }
 
-            if (context.source_file)
-            {
-                // the template calls a member function, so we need full inclusion
-                context.source_file->add_dependency(metaclass, DependencyLevel::Include);
-                context.source_file->add_extra_include(STR("Templates/SubclassOf.h"));
-            }
+            // the template calls a member function, so we need full inclusion
+            context.source_file.add_dependency(metaclass, DependencyLevel::Include);
+            context.source_file.add_extra_include(STR("Templates/SubclassOf.h"));
             auto metaclass_name = get_native_class_name(metaclass);
             return fmt::format(STR("TSubclassOf<{}>"), metaclass_name);
         }
@@ -2211,10 +2201,7 @@ namespace RC::UEGenerator
             {
                 return STR("TSoftClassPtr<UObject>");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(metaclass, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(metaclass, DependencyLevel::PreDeclaration);
             auto metaclass_name = get_native_class_name(metaclass);
             return fmt::format(STR("TSoftClassPtr<{}>"), metaclass_name);
         }
@@ -2229,10 +2216,7 @@ namespace RC::UEGenerator
             {
                 return STR("UObject*");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(property_class, DependencyLevel::PreDeclaration);
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("{}*"), property_class_name);
         }
@@ -2244,10 +2228,7 @@ namespace RC::UEGenerator
             {
                 return STR("TObjectPtr<UObject>");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(property_class, DependencyLevel::PreDeclaration);
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TObjectPtr<{}>"), property_class_name);
         }
@@ -2258,10 +2239,7 @@ namespace RC::UEGenerator
             {
                 return STR("TWeakObjectPtr<UObject>");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(property_class, DependencyLevel::PreDeclaration);
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TWeakObjectPtr<{}>"), property_class_name);
         }
@@ -2272,10 +2250,7 @@ namespace RC::UEGenerator
             {
                 return STR("TLazyObjectPtr<UObject>");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(property_class, DependencyLevel::PreDeclaration);
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TLazyObjectPtr<{}>"), property_class_name);
         }
@@ -2286,10 +2261,7 @@ namespace RC::UEGenerator
             {
                 return STR("TSoftObjectPtr<UObject>");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(property_class, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(property_class, DependencyLevel::PreDeclaration);
             auto property_class_name = get_native_class_name(property_class);
             return fmt::format(STR("TSoftObjectPtr<{}>"), property_class_name);
         }
@@ -2300,10 +2272,7 @@ namespace RC::UEGenerator
             {
                 return STR("FScriptInterface");
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(interface_class, DependencyLevel::PreDeclaration);
-            }
+            context.source_file.add_dependency(interface_class, DependencyLevel::PreDeclaration);
             const std::wstring interface_class_name = get_native_class_name(interface_class, true);
 
             return fmt::format(STR("TScriptInterface<{}>"), interface_class_name);
@@ -2311,10 +2280,7 @@ namespace RC::UEGenerator
         if (auto prop = CastField<FStructProperty>(property))
         {
             auto script_struct = prop->GetStruct();
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(script_struct, DependencyLevel::Include);
-            }
+            context.source_file.add_dependency(script_struct, DependencyLevel::Include);
             return get_native_struct_name(script_struct);
         }
         // Delegate Properties
@@ -2325,10 +2291,7 @@ namespace RC::UEGenerator
             {
                 throw std::runtime_error{fmt::format("FunctionSignature is nullptr, cannot deduce function for '{}'\n", to_string(prop->GetFullName()))};
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(signature_func, DependencyLevel::Include);
-            }
+            context.source_file.add_dependency(signature_func, DependencyLevel::Include);
             return get_native_delegate_type_name(signature_func, current_class);
         }
         // In 4.23, they replaced 'MulticastDelegateProperty' with 'Inline' & 'Sparse' variants
@@ -2340,10 +2303,7 @@ namespace RC::UEGenerator
             {
                 throw std::runtime_error{fmt::format("FunctionSignature is nullptr, cannot deduce function for '{}'\n", to_string(prop->GetFullName()))};
             }
-            if (context.source_file)
-            {
-                context.source_file->add_dependency(signature_func, DependencyLevel::Include);
-            }
+            context.source_file.add_dependency(signature_func, DependencyLevel::Include);
             return get_native_delegate_type_name(signature_func, current_class);
         }
         if (auto prop = CastField<FFieldPathProperty>(property))
@@ -2901,7 +2861,6 @@ namespace RC::UEGenerator
                                                              UFunction* function,
                                                              GeneratedSourceFile& header_data,
                                                              bool generate_comma_before_name,
-                                                             std::wstring_view context_name,
                                                              const CaseInsensitiveSet& blacklisted_parameter_names,
                                                              int32_t* out_num_params) -> std::wstring
     {
@@ -2936,7 +2895,7 @@ namespace RC::UEGenerator
                     param_declaration.append(STR("const "));
                 }
 
-                PropertyTypeDeclarationContext context(context_name, &header_data, false, true);
+                PropertyTypeDeclarationContext context(header_data, false, true);
                 param_declaration.append(generate_property_type_declaration(property, context));
 
                 if (needs_reference_workaround(property))
@@ -3053,9 +3012,16 @@ namespace RC::UEGenerator
             return STR("nullptr");
         }
         auto value_class = value->GetClassPrivate();
-        if (auto val = Cast<UClass>(value))
+        if (auto uclass = Cast<UClass>(value))
         {
-            return generate_class_value(val, metaclass, implementation_file);
+            return generate_class_value(uclass, metaclass, implementation_file);
+        }
+        if (auto uenum = Cast<UEnum>(value); uenum && !uenum->IsA<UUserDefinedEnum>())
+        {
+            // TODO: could be a pre-declaration
+            implementation_file.add_dependency(uenum, DependencyLevel::Include);
+            auto enum_name = get_native_enum_name(uenum, false);
+            return fmt::format(STR("StaticEnum<{}>()"), enum_name);
         }
         if (value->HasAnyFlags(RF_ClassDefaultObject))
         {
@@ -3192,7 +3158,9 @@ namespace RC::UEGenerator
             auto inner_prop = prop->GetInner();
             auto& value = *static_cast<FScriptArray const*>(data);
 
-            StringType out = STR("{");
+            PropertyTypeDeclarationContext context{implementation_file};
+            auto inner_type = generate_property_type_declaration(inner_prop, context);
+            StringType out = fmt::format(STR("TArray<{}>{{"), inner_type);
             bool first = true;
             for (auto element : each_item(value, inner_prop))
             {
@@ -3208,7 +3176,9 @@ namespace RC::UEGenerator
             auto element_prop = prop->GetElementProp();
             auto& value = *static_cast<FScriptSet const*>(data);
 
-            StringType out = STR("{");
+            PropertyTypeDeclarationContext context{implementation_file};
+            auto element_type = generate_property_type_declaration(element_prop, context);
+            StringType out = fmt::format(STR("TSet<{}>{{"), element_type);
             bool first = true;
             for (auto element : each_item(value, element_prop))
             {
@@ -3225,7 +3195,10 @@ namespace RC::UEGenerator
             auto value_prop = prop->GetValueProp();
             auto& value = *static_cast<FScriptSet const*>(data);
 
-            StringType out = STR("{");
+            PropertyTypeDeclarationContext context{implementation_file};
+            auto key_type = generate_property_type_declaration(key_prop, context);
+            auto value_type = generate_property_type_declaration(value_prop, context);
+            StringType out = fmt::format(STR("TMap<{}, {}>{{"), key_type, value_type);
             bool first = true;
             for (auto [key, value] : each_item(value, key_prop, value_prop))
             {
@@ -3304,7 +3277,7 @@ namespace RC::UEGenerator
         {
             for (FProperty* child_prop : st->ForEachProperty())
             {
-                generate_property_assignment_in_container(self, child_prop, data, arch_data, file, property_scope, true);
+                generate_property_assignment_in_container(self, child_prop, data, arch_data, file, property_scope, false);
             }
         }
         return fmt::format(STR("{}"), root);
@@ -3457,6 +3430,128 @@ namespace RC::UEGenerator
         auto a = prop_A->GetPropertyValueInContainer(data);
         return fmt::format(STR("{}({:.9e}f, {:.9e}f, {:.9e}f, {:.9e}f)"), native_name, r, g, b, a);
     }
+    static auto erase_suffix(StringType& str, StringViewType suffix) -> bool
+    {
+        if (!str.ends_with(suffix)) return false;
+        str.erase(str.end() - suffix.size(), str.end());
+        return true;
+    }
+    namespace FBlackboard
+    {
+        static constexpr uint8 InvalidKey = 255;
+    }
+    auto UEHeaderGenerator::generate_struct_BlackboardKeySelector(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType
+    {
+        auto ustruct = prop->GetStruct();
+        auto arch_data = get_default_object(ustruct);
+        static auto prop_AllowedTypes = CastField<FArrayProperty>(ustruct->GetPropertyByName(STR("AllowedTypes")));
+        static auto prop_SelectedKeyName = CastField<FNameProperty>(ustruct->GetPropertyByName(STR("SelectedKeyName")));
+        static auto prop_SelectedKeyType = CastField<FClassProperty>(ustruct->GetPropertyByName(STR("SelectedKeyType")));
+        static auto prop_SelectedKeyID = CastField<FByteProperty>(ustruct->GetPropertyByName(STR("SelectedKeyID")));
+        static auto prop_bNoneIsAllowedValue = CastField<FBoolProperty>(ustruct->GetPropertyByName(STR("bNoneIsAllowedValue")));
+        static auto UBlackboardKeyType_Object = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Object"));
+        static auto prop_UBlackboardKeyType_Object_BaseClass = CastField<FClassProperty>(UBlackboardKeyType_Object->GetPropertyByName(STR("BaseClass")));
+        static auto UBlackboardKeyType_Class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Class"));
+        static auto prop_UBlackboardKeyType_Class_BaseClass = CastField<FClassProperty>(UBlackboardKeyType_Class->GetPropertyByName(STR("BaseClass")));
+        static auto UBlackboardKeyType_Enum = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Enum"));
+        static auto prop_UBlackboardKeyType_Enum_EnumType = CastField<FObjectProperty>(UBlackboardKeyType_Enum->GetPropertyByName(STR("EnumType")));
+        static auto UBlackboardKeyType_NativeEnum = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_NativeEnum"));
+        static auto prop_UBlackboardKeyType_NativeEnum_EnumName = CastField<FStrProperty>(UBlackboardKeyType_NativeEnum->GetPropertyByName(STR("EnumName")));
+        static auto UBlackboardKeyType_Int = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Int"));
+        static auto UBlackboardKeyType_Float = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Float"));
+        static auto UBlackboardKeyType_Bool = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Bool"));
+        static auto UBlackboardKeyType_Vector = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Vector"));
+        static auto UBlackboardKeyType_Rotator = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Rotator"));
+        static auto UBlackboardKeyType_String = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_String"));
+        static auto UBlackboardKeyType_Name = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeyType_Name"));
+
+        auto id = file.gen_id();
+        file.format_line(STR("{} gen{};"), native_name, id);
+
+        auto& allowed_types = *prop_AllowedTypes->ContainerPtrToValuePtr<FScriptArray>(data);
+        for (auto d : each_item(allowed_types, prop_AllowedTypes->GetInner()))
+        {
+            auto type = *static_cast<UObject* const*>(d);
+            auto name = type->GetName();
+            StringType arg;
+            CharType const* method = nullptr;
+            if (type->IsA(UBlackboardKeyType_Object))
+            {
+                erase_suffix(name, STR("_Object"));
+                method = STR("AddObjectFilter");
+                arg = generate_property_value(self, prop_UBlackboardKeyType_Object_BaseClass, prop_UBlackboardKeyType_Object_BaseClass->ContainerPtrToValuePtr<void>(type), file);
+            }
+            else if (type->IsA(UBlackboardKeyType_Class))
+            {
+                erase_suffix(name, STR("_Class"));
+                method = STR("AddClassFilter");
+                arg = generate_property_value(self, prop_UBlackboardKeyType_Class_BaseClass, prop_UBlackboardKeyType_Class_BaseClass->ContainerPtrToValuePtr<void>(type), file);
+            }
+            else if (type->IsA(UBlackboardKeyType_Enum))
+            {
+                erase_suffix(name, STR("_Enum"));
+                method = STR("AddEnumFilter");
+                arg = generate_property_value(self, prop_UBlackboardKeyType_Enum_EnumType, prop_UBlackboardKeyType_Enum_EnumType->ContainerPtrToValuePtr<void>(type), file);
+            }
+            else if (type->IsA(UBlackboardKeyType_NativeEnum))
+            {
+                erase_suffix(name, STR("_NativeEnum"));
+                method = STR("AddNativeEnumFilter");
+                arg = generate_property_value(self, prop_UBlackboardKeyType_NativeEnum_EnumName, prop_UBlackboardKeyType_NativeEnum_EnumName->ContainerPtrToValuePtr<void>(type), file);
+            }
+            else if (type->IsA(UBlackboardKeyType_Int))
+            {
+                erase_suffix(name, STR("_Int"));
+                method = STR("AddIntFilter");
+            }
+            else if (type->IsA(UBlackboardKeyType_Float))
+            {
+                erase_suffix(name, STR("_Float"));
+                method = STR("AddFloatFilter");
+            }
+            else if (type->IsA(UBlackboardKeyType_Bool))
+            {
+                erase_suffix(name, STR("_Bool"));
+                method = STR("AddBoolFilter");
+            }
+            else if (type->IsA(UBlackboardKeyType_Vector))
+            {
+                erase_suffix(name, STR("_Vector"));
+                method = STR("AddVectorFilter");
+            }
+            else if (type->IsA(UBlackboardKeyType_Rotator))
+            {
+                erase_suffix(name, STR("_Rotator"));
+                method = STR("AddRotatorFilter");
+            }
+            else if (type->IsA(UBlackboardKeyType_String))
+            {
+                erase_suffix(name, STR("_String"));
+                method = STR("AddStringFilter");
+            }
+            else if (type->IsA(UBlackboardKeyType_Name))
+            {
+                erase_suffix(name, STR("_Name"));
+                method = STR("AddNameFilter");
+            }
+            else
+            {
+                abort();
+            }
+            file.format_line(STR("gen{}.{}(this, {}{}{});"), id, method, create_string_literal(name), arg.empty() ? STR("") : STR(", "), arg);
+        }
+
+        assert(prop_SelectedKeyID->Identical_InContainer(data, arch_data));
+        assert(prop_SelectedKeyType->Identical_InContainer(data, arch_data));
+        assert(prop_SelectedKeyID->GetPropertyValueInContainer(data) == FBlackboard::InvalidKey);
+        assert(prop_SelectedKeyType->GetPropertyValueInContainer(data) == nullptr);
+
+        auto root = fmt::format(STR("gen{}"), id);
+        PropertyScope scope{root};
+        generate_property_assignment_in_container(self, prop_SelectedKeyName, data, arch_data, file, scope, false);
+        generate_property_assignment_in_container(self, prop_bNoneIsAllowedValue, data, arch_data, file, scope, false);
+        return root;
+    }
     auto UEHeaderGenerator::struct_generators() -> std::unordered_map<FName, StructValueGenerator> const&
     {
         static std::unordered_map<FName, StructValueGenerator> generators;
@@ -3486,6 +3581,7 @@ namespace RC::UEGenerator
             generators.insert({FName(STR("FrameNumberRange"), FNAME_Add), &generate_struct_TRange});
             generators.insert({FName(STR("FrameNumberRangeBound"), FNAME_Add), &generate_struct_TRangeBound});
             generators.insert({FName(STR("LinearColor"), FNAME_Add), &generate_struct_LinearColor});
+            generators.insert({FName(STR("BlackboardKeySelector"), FNAME_Add), &generate_struct_BlackboardKeySelector});
         }
         return generators;
     }
@@ -3500,7 +3596,7 @@ namespace RC::UEGenerator
     }
     auto UEHeaderGenerator::generate_ActorComponent_bReplicates(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
-        generate_property_element_call(STR("SetIsReplicated"), self, property, data, arch_data, file, scope, write_defaults);
+        generate_property_element_call(STR("SetIsReplicatedByDefault"), self, property, data, arch_data, file, scope, write_defaults);
     }
     auto UEHeaderGenerator::generate_Actor_bCanBeDamaged(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
@@ -3530,6 +3626,14 @@ namespace RC::UEGenerator
     auto UEHeaderGenerator::generate_SplineComponent_bClosedLoop(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
         generate_property_element_call(STR("SetClosedLoop"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_BodyInstance_CollisionEnabled(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("SetCollisionEnabled"), self, property, data, arch_data, file, scope, write_defaults);
+    }
+    auto UEHeaderGenerator::generate_BlackboardKeySelector_bNoneIsAllowedValue(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
+    {
+        generate_property_element_call(STR("AllowNoneAsValue"), self, property, data, arch_data, file, scope, write_defaults);
     }
     auto UEHeaderGenerator::generate_Actor_ReplicatedMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void
     {
@@ -3572,6 +3676,12 @@ namespace RC::UEGenerator
             setters.insert({Actor->GetPropertyByName(STR("bReplicateMovement")), &generate_Actor_bReplicateMovement});
             setters.insert({Actor->GetPropertyByName(STR("RemoteRole")), &generate_Actor_RemoteRole});
             setters.insert({Actor->GetPropertyByName(STR("ReplicatedMovement")), &generate_Actor_ReplicatedMovement});
+
+            auto BodyInstance = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, STR("/Script/Engine.BodyInstance"));
+            setters.insert({BodyInstance->GetPropertyByName(STR("CollisionEnabled")), &generate_BodyInstance_CollisionEnabled});
+
+            auto BlackboardKeySelector = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, STR("/Script/AIModule.BlackboardKeySelector"));
+            setters.insert({BlackboardKeySelector->GetPropertyByName(STR("bNoneIsAllowedValue")), &generate_BlackboardKeySelector_bNoneIsAllowedValue});
         }
         return setters;
     }

@@ -81,21 +81,17 @@ namespace RC::UEGenerator
 
     struct PropertyTypeDeclarationContext
     {
-        StringType context_name;
-
-        class GeneratedSourceFile* source_file;
+        class GeneratedSourceFile& source_file;
 
         bool is_top_level_declaration;
         bool is_parm;
         bool* out_is_bitmask_bool;
 
-        PropertyTypeDeclarationContext(StringViewType context_name,
-                                       GeneratedSourceFile* source_file = NULL,
+        PropertyTypeDeclarationContext(GeneratedSourceFile& source_file,
                                        bool is_top_level_declaration = false,
                                        bool is_parm = false,
                                        bool* out_is_bitmask_bool = NULL)
-            : context_name(context_name)
-            , source_file(source_file)
+            : source_file(source_file)
             , is_top_level_declaration(is_top_level_declaration)
             , is_parm(is_parm)
             , out_is_bitmask_bool(out_is_bitmask_bool)
@@ -104,7 +100,7 @@ namespace RC::UEGenerator
 
         auto inner_context() const -> PropertyTypeDeclarationContext
         {
-            return PropertyTypeDeclarationContext(context_name, source_file);
+            return PropertyTypeDeclarationContext(source_file);
         }
     };
 
@@ -475,6 +471,8 @@ namespace RC::UEGenerator
         auto generate_Actor_bReplicateMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
         auto generate_Actor_ReplicatedMovement(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
         auto generate_Actor_RemoteRole(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_BlackboardKeySelector_bNoneIsAllowedValue(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
+        auto generate_BodyInstance_CollisionEnabled(UStruct* self, FProperty* property, void const* data, void const* arch_data, GeneratedSourceFile& file, PropertyScope& scope, bool write_defaults) -> void;
         auto generate_function_implementation(UClass* uclass,
                                               UFunction* function,
                                               GeneratedSourceFile& implementation_file,
@@ -494,7 +492,6 @@ namespace RC::UEGenerator
                                               UFunction* function,
                                               GeneratedSourceFile& header_data,
                                               bool generate_comma_before_name,
-                                              StringViewType context_name,
                                               CaseInsensitiveSet const& blacklisted_parameter_names,
                                               int32_t* out_num_params = NULL) -> StringType;
 
@@ -511,6 +508,7 @@ namespace RC::UEGenerator
         auto generate_struct_TRange(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
         auto generate_struct_TRangeBound(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
         auto generate_struct_LinearColor(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
+        auto generate_struct_BlackboardKeySelector(UStruct* self, StringViewType native_name, FStructProperty* prop, void const* data, GeneratedSourceFile& file) -> StringType;
         auto generate_object_finder(UClass* class_, StringViewType path, GeneratedSourceFile& implementation_file, bool is_class) -> StringType;
         auto generate_enum_value(UEnum* uenum, int64_t enum_value, GeneratedSourceFile& implementation_file) -> StringType;
 
