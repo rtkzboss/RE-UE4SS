@@ -139,9 +139,7 @@ namespace RC::UEGenerator
 
     static auto string_to_uppercase(std::wstring s) -> std::wstring
     {
-        std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) {
-            return towupper(c);
-        });
+        std::transform(s.begin(), s.end(), s.begin(), ::towupper);
         return s;
     }
     static auto string_contains_ci(std::wstring_view haystack, std::wstring_view needle) -> bool
@@ -966,7 +964,7 @@ namespace RC::UEGenerator
                 result_enumeration_line.append(fmt::format(STR(" = {}{}{}"), CastString, MinusSign, std::abs(Value)));
             }
             expected_next_enum_value = Value + 1;
-            last_value_was_negative_one = (Value == -1);
+            last_value_was_negative_one = Value == -1;
 
             StringType pre_append_result_line_lower = pre_append_result_line;
             std::transform(pre_append_result_line_lower.begin(), pre_append_result_line_lower.end(), pre_append_result_line_lower.begin(), ::towlower);
